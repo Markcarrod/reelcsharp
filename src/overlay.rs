@@ -190,7 +190,6 @@ pub fn draw_text_lines(
     shadow_color: Rgba<u8>,
 ) -> f32 {
     let mut cursor_y = start_y;
-    let scaled_font = font.as_scaled(scale);
 
     for line in lines {
         let (width, height) = get_text_bbox(font, scale, line);
@@ -236,7 +235,7 @@ fn draw_line_raw(
         };
 
         if let Some(outline) = font.outline_glyph(glyph) {
-            let bounds = outline.bounds();
+            let bounds = outline.px_bounds();
             outline.draw(|px, py, v| {
                 let gx = (bounds.min.x + px as f32) as i32;
                 let gy = (bounds.min.y + py as f32) as i32;

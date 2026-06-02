@@ -25,7 +25,8 @@ pub fn slugify(value: &str) -> String {
 
 pub fn normalize_layout(value: &str) -> String {
     let re = Regex::new(r"[^a-z0-9]+").unwrap();
-    let normalized = re.replace_all(&value.to_lowercase(), "_");
+    let val_lower = value.to_lowercase();
+    let normalized = re.replace_all(&val_lower, "_");
     let normalized = normalized.trim_matches('_');
 
     match normalized {
