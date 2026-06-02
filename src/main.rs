@@ -3,6 +3,8 @@ use rand::seq::SliceRandom;
 use rand::thread_rng;
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 mod parser;
@@ -13,7 +15,7 @@ mod ffmpeg;
 #[command(name = "rust_reel_forge", version = "0.1.0", about = "Stunning 9:16 reels generator written in pure high-performance Rust")]
 struct Args {
     #[arg(long, help = "Path to the script file (txt format)")]
-    script: PathBuf,
+    script: Option<PathBuf>,
 
     #[arg(long, default_value = "input/videos", help = "Folder containing background videos")]
     videos: PathBuf,
@@ -69,21 +71,23 @@ fn get_millisecond_stamp() -> String {
     }
 }
 
-fn main() {
-    let args = Args::parse();
-
+// --------------------------------------------------
+//               CLI MODE EXECUTION
+// --------------------------------------------------
+fn run_cli(args: Args) {
+    let script_path = args.script.expect("Script path is required in CLI mode");
     println!("--------------------------------------------------");
     println!("        🚀 RUST REEL FORGE — INITIALIZING         ");
     println!("--------------------------------------------------");
 
-    let scripts = match parser::parse_scripts(&args.script) {
+    let scripts = match parser::parse_scripts(&script_path) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("❌ Failed to parse script file: {}", e);
             std::process::exit(1);
         }
     };
-    println!("📝 Loaded {} script(s) from {:?}", scripts.len(), args.script);
+    println!("📝 Loaded {} script(s) from {:?}", scripts.len(), script_path);
 
     let video_extensions = ["mp4", "mov", "mkv", "webm"];
     let audio_extensions = ["mp3", "wav", "m4a", "aac"];
@@ -113,7 +117,6 @@ fn main() {
     let workers = args.workers.max(1).min(scripts.len());
     println!("🧵 Spinning up worker pool ({} parallel workers)...", workers);
 
-    // Build the Rayon thread pool
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(workers)
         .build()
@@ -128,20 +131,16 @@ fn main() {
             .map(|(index, script)| {
                 let stamp = get_millisecond_stamp();
                 let duration = script.duration.unwrap_or(args.duration);
-                let duration = 13.0f32.min(12.0f32.max(duration)); // normalized duration limit
+                let duration = 13.0f32.min(12.0f32.max(duration));
 
                 println!("[Worker] Rendering script {}/{}: \"{}\"", index + 1, scripts.len(), script.title);
 
-                // 1. Render all PNG text overlay frames
                 let mut overlay_paths = Vec::new();
-                
-                // Title overlay (layer 0)
                 match overlay::make_overlay(script, 0, &args.overlays, &stamp, &font) {
                     Ok(path) => overlay_paths.push(path),
                     Err(e) => return Err(format!("Failed to make title overlay: {}", e)),
                 }
 
-                // Point overlays (layers 1..N)
                 for point_index in 0..script.points.len() {
                     match overlay::make_overlay(script, point_index + 1, &args.overlays, &stamp, &font) {
                         Ok(path) => overlay_paths.push(path),
@@ -149,7 +148,6 @@ fn main() {
                     }
                 }
 
-                // 2. Composite with background media using FFmpeg
                 match ffmpeg::render_video(
                     script,
                     index,
@@ -186,4 +184,332 @@ fn main() {
         }
     }
     println!("📈 Rendered {}/{} videos successfully.", success_count, scripts.len());
+}
+
+
+// --------------------------------------------------
+//               NATIVE RUST GUI MODE
+// --------------------------------------------------
+struct AppState {
+    video_folder: String,
+    music_folder: String,
+    output_folder: String,
+    overlay_folder: String,
+    duration: String,
+    workers: String,
+    script_text: String,
+    logs: Arc<Mutex<Vec<String>>>,
+    is_rendering: bool,
+    status_msg: String,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            video_folder: "input/videos".to_string(),
+            music_folder: "input/music".to_string(),
+            output_folder: "output/videos".to_string(),
+            overlay_folder: "output/overlays".to_string(),
+            duration: "12.5".to_string(),
+            workers: "4".to_string(),
+            script_text: "TITLE:Fast Rust UI\nPerfect native execution.\nPure C++ and Rust performance.\nCTA:Accelerate your workflow.".to_string(),
+            logs: Arc::new(Mutex::new(vec!["Welcome to Rust Reel Forge! GUI is ready.".to_string()])),
+            is_rendering: false,
+            status_msg: "Ready".to_string(),
+        }
+    }
+}
+
+struct ReelForgeApp {
+    state: AppState,
+    log_receiver: Option<Receiver<String>>,
+}
+
+impl ReelForgeApp {
+    fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+        Self {
+            state: AppState::default(),
+            log_receiver: None,
+        }
+    }
+
+    fn add_log(&self, msg: String) {
+        if let Ok(mut logs) = self.state.logs.lock() {
+            logs.push(msg);
+        }
+    }
+
+    fn trigger_render(&mut self) {
+        let video_dir = PathBuf::from(&self.state.video_folder);
+        let music_dir = PathBuf::from(&self.state.music_folder);
+        let output_dir = PathBuf::from(&self.state.output_folder);
+        let overlay_dir = PathBuf::from(&self.state.overlay_folder);
+
+        let duration: f32 = self.state.duration.parse().unwrap_or(12.5);
+        let workers: usize = self.state.workers.parse().unwrap_or(4);
+        let script_content = self.state.script_text.clone();
+
+        self.state.is_rendering = true;
+        self.state.status_msg = "Rendering...".to_string();
+
+        let (tx, rx) = channel();
+        self.log_receiver = Some(rx);
+
+        let logs_clone = self.state.logs.clone();
+
+        // Spawn high-performance render thread
+        std::thread::spawn(move || {
+            let log = |m: &str| {
+                let _ = tx.send(m.to_string());
+            };
+
+            log("🚀 Starting pure-Rust background render engine...");
+
+            // Parse temporary script
+            let temp_script = PathBuf::from("temp_gui_script.txt");
+            if let Err(e) = std::fs::write(&temp_script, &script_content) {
+                log(&format!("❌ Failed to write temp script: {}", e));
+                return;
+            }
+
+            let scripts = match parser::parse_scripts(&temp_script) {
+                Ok(s) => s,
+                Err(e) => {
+                    log(&format!("❌ Script parse error: {}", e));
+                    return;
+                }
+            };
+            log(&format!("📝 Parsed {} scripts successfully.", scripts.len()));
+
+            let video_extensions = ["mp4", "mov", "mkv", "webm"];
+            let audio_extensions = ["mp3", "wav", "m4a", "aac"];
+
+            let mut videos = list_files_with_extensions(&video_dir, &video_extensions);
+            let mut music_files = list_files_with_extensions(&music_dir, &audio_extensions);
+
+            if videos.is_empty() {
+                log("⚠️  No background videos found; using black canvas.");
+            } else {
+                log(&format!("📹 Loaded {} background video(s).", videos.len()));
+                videos.shuffle(&mut thread_rng());
+            }
+
+            if music_files.is_empty() {
+                log("🎵 No audio files found.");
+            } else {
+                log(&format!("🎶 Loaded {} audio track(s).", music_files.len()));
+                music_files.shuffle(&mut thread_rng());
+            }
+
+            log("🎨 Compiling and loading system font libraries...");
+            let font = overlay::load_system_font();
+
+            let active_workers = workers.max(1).min(scripts.len());
+            log(&format!("🧵 Spawning work pool with {} parallel workers...", active_workers));
+
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(active_workers)
+                .build()
+                .unwrap();
+
+            let start_time = std::time::Instant::now();
+
+            let outputs: Vec<Result<PathBuf, String>> = pool.install(|| {
+                scripts
+                    .par_iter()
+                    .enumerate()
+                    .map(|(index, script)| {
+                        let stamp = get_millisecond_stamp();
+                        let d = script.duration.unwrap_or(duration);
+                        let d = 13.0f32.min(12.0f32.max(d));
+
+                        let _ = tx.send(format!("[Worker] Building text frames for Reel {}...", index + 1));
+
+                        let mut overlay_paths = Vec::new();
+                        match overlay::make_overlay(script, 0, &overlay_dir, &stamp, &font) {
+                            Ok(path) => overlay_paths.push(path),
+                            Err(e) => return Err(format!("Overlay title failed: {}", e)),
+                        }
+
+                        for point_index in 0..script.points.len() {
+                            match overlay::make_overlay(script, point_index + 1, &overlay_dir, &stamp, &font) {
+                                Ok(path) => overlay_paths.push(path),
+                                Err(e) => return Err(format!("Overlay point failed: {}", e)),
+                            }
+                        }
+
+                        let _ = tx.send(format!("[Worker] Multiplexing FFmpeg render for Reel {}...", index + 1));
+                        match ffmpeg::render_video(
+                            script,
+                            index,
+                            &videos,
+                            &music_files,
+                            &output_dir,
+                            &overlay_paths,
+                            d,
+                            &stamp,
+                        ) {
+                            Ok(out) => Ok(out),
+                            Err(e) => Err(format!("FFmpeg failed: {}", e)),
+                        }
+                    })
+                    .collect()
+            });
+
+            let elapsed = start_time.elapsed();
+            log("==================================================");
+            log(&format!("🎉 RENDER POOL DONE! Total time: {:.2?}", elapsed));
+            log("==================================================");
+
+            for (i, res) in outputs.iter().enumerate() {
+                match res {
+                    Ok(path) => log(&format!("  ✅ Reel {} generated: {:?}", i + 1, path.file_name().unwrap())),
+                    Err(e) => log(&format!("  ❌ Reel {} failed: {}", i + 1, e)),
+                }
+            }
+
+            let _ = std::fs::remove_file(&temp_script);
+            let _ = tx.send("__FINISHED__".to_string());
+        });
+    }
+}
+
+impl eframe::App for ReelForgeApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Poll channel messages
+        if let Some(ref rx) = self.log_receiver {
+            while let Ok(msg) = rx.try_recv() {
+                if msg == "__FINISHED__" {
+                    self.state.is_rendering = false;
+                    self.state.status_msg = "Done ✅".to_string();
+                    self.add_log("🎉 Process finished!".to_string());
+                } else {
+                    self.add_log(msg);
+                }
+            }
+        }
+
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ctx.set_visuals(egui::Visuals::dark());
+
+            ui.vertical_centered(|ui| {
+                ui.heading("🦀 Rust Reel Forge — Native GUI");
+                ui.label("Ultra-fast, hardware-accelerated video/overlay builder");
+            });
+            ui.separator();
+
+            // Config Form Grid
+            egui::Grid::new("config_grid")
+                .num_columns(3)
+                .spacing([10.0, 10.0])
+                .show(ui, |ui| {
+                    ui.label("Videos Folder:");
+                    ui.text_edit_singleline(&mut self.state.video_folder);
+                    if ui.button("Browse...").clicked() {
+                        if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                            self.state.video_folder = path.to_string_lossy().to_string();
+                        }
+                    }
+                    ui.end_row();
+
+                    ui.label("Music Folder:");
+                    ui.text_edit_singleline(&mut self.state.music_folder);
+                    if ui.button("Browse...").clicked() {
+                        if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                            self.state.music_folder = path.to_string_lossy().to_string();
+                        }
+                    }
+                    ui.end_row();
+
+                    ui.label("Output Folder:");
+                    ui.text_edit_singleline(&mut self.state.output_folder);
+                    if ui.button("Browse...").clicked() {
+                        if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                            self.state.output_folder = path.to_string_lossy().to_string();
+                        }
+                    }
+                    ui.end_row();
+
+                    ui.label("Overlays Folder:");
+                    ui.text_edit_singleline(&mut self.state.overlay_folder);
+                    if ui.button("Browse...").clicked() {
+                        if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                            self.state.overlay_folder = path.to_string_lossy().to_string();
+                        }
+                    }
+                    ui.end_row();
+
+                    ui.label("Duration (sec):");
+                    ui.text_edit_singleline(&mut self.state.duration);
+                    ui.label("(12.0 - 13.0)");
+                    ui.end_row();
+
+                    ui.label("Threads:");
+                    ui.text_edit_singleline(&mut self.state.workers);
+                    ui.label("Parallel workers");
+                    ui.end_row();
+                });
+
+            ui.separator();
+            ui.label("Script Editor:");
+            ui.add(
+                egui::TextEdit::multiline(&mut self.state.script_text)
+                    .font(egui::TextStyle::Monospace)
+                    .desired_width(f32::INFINITY)
+                    .desired_rows(8),
+            );
+
+            ui.separator();
+
+            // Bottom bar with controls
+            ui.horizontal(|ui| {
+                if ui.add_enabled(!self.state.is_rendering, egui::Button::new("🚀 Start Native Render")).clicked() {
+                    self.trigger_render();
+                }
+
+                ui.label(format!("Status: {}", self.state.status_msg));
+            });
+
+            ui.separator();
+            ui.label("Execution Logs:");
+            
+            // Render Logs Scroller
+            egui::ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
+                if let Ok(logs) = self.state.logs.lock() {
+                    for log in logs.iter() {
+                        ui.label(log);
+                    }
+                }
+            });
+        });
+
+        // Keep updating UI while rendering so logs stream smoothly
+        if self.state.is_rendering {
+            ctx.request_repaint();
+        }
+    }
+}
+
+// --------------------------------------------------
+//               APPLICATION MAIN ENTRY
+// --------------------------------------------------
+fn main() {
+    let args = Args::parse();
+
+    if args.script.is_some() {
+        // Run as CLI tool
+        run_cli(args);
+    } else {
+        // Run as pure-Rust native GUI!
+        println!("🚀 Launching native Rust GUI...");
+        let options = eframe::NativeOptions {
+            initial_window_size: Some(egui::vec2(780.0, 680.0)),
+            ..Default::options()
+        };
+        eframe::run_native(
+            "Rust Reel Forge",
+            options,
+            Box::new(|cc| Box::new(ReelForgeApp::new(cc))),
+        ).unwrap();
+    }
 }
