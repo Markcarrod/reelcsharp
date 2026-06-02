@@ -127,12 +127,26 @@ pub fn load_system_font() -> FontArc {
 }
 
 pub fn first_hook_word(value: &str) -> String {
+    let normalized = normalize_render_text(value);
     let re = regex::Regex::new(r"[A-Za-z][A-Za-z'-]{2,}").unwrap();
-    if let Some(mat) = re.find(value) {
+    if let Some(mat) = re.find(&normalized) {
         format!("{}?", mat.as_str().to_uppercase())
     } else {
-        value.to_uppercase()
+        normalized.to_uppercase()
     }
+}
+
+fn normalize_render_text(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| match ch {
+            '\u{2010}' | '\u{2011}' | '\u{2012}' | '\u{2013}' | '\u{2014}' | '\u{2212}' => '-',
+            '\u{2018}' | '\u{2019}' | '\u{201B}' => '\'',
+            '\u{201C}' | '\u{201D}' | '\u{201F}' => '"',
+            '\u{00A0}' => ' ',
+            _ => ch,
+        })
+        .collect()
 }
 
 pub fn get_text_bbox(font: &FontArc, scale: PxScale, text: &str) -> (f32, f32) {
@@ -281,7 +295,7 @@ pub fn make_overlay(
         let mut title_text = if layout == "one_word_hook" {
             first_hook_word(&script.title)
         } else {
-            script.title.clone()
+            normalize_render_text(&script.title)
         };
         if layout == "quote_style" {
             title_text = format!("\"{}\"", title_text.trim_matches('"'));
@@ -307,7 +321,7 @@ pub fn make_overlay(
             if layout == "progress_reveal" {
                 point = format!("{}/{}  {}", point_index + 1, script.points.len().max(1), point);
             }
-            let text = format!("{}{}", spec.marker, point);
+            let text = normalize_render_text(&format!("{}{}", spec.marker, point));
             let lines = wrap_text(font, scale, &text, spec.point.width);
             let point_y = spec.point.y + (point_index as f32 * spec.point_offset_y);
             draw_text_lines(
@@ -324,7 +338,8 @@ pub fn make_overlay(
             );
         } else if point_index == script.points.len() && !script.cta.is_empty() {
             let scale = PxScale::from(spec.cta.font_size);
-            let lines = wrap_text(font, scale, &script.cta, spec.cta.width);
+            let cta_text = normalize_render_text(&script.cta);
+            let lines = wrap_text(font, scale, &cta_text, spec.cta.width);
             draw_text_lines(
                 &mut image,
                 font,
