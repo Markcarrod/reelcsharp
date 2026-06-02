@@ -3,7 +3,7 @@ use rand::seq::SliceRandom;
 use rand::thread_rng;
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{channel, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -255,8 +255,6 @@ impl ReelForgeApp {
         let (tx, rx) = channel();
         self.log_receiver = Some(rx);
 
-        let logs_clone = self.state.logs.clone();
-
         // Spawn high-performance render thread
         std::thread::spawn(move || {
             let log = |m: &str| {
@@ -503,8 +501,9 @@ fn main() {
         // Run as pure-Rust native GUI!
         println!("🚀 Launching native Rust GUI...");
         let options = eframe::NativeOptions {
-            initial_window_size: Some(egui::vec2(780.0, 680.0)),
-            ..Default::options()
+            viewport: egui::ViewportBuilder::default()
+                .with_inner_size(egui::vec2(780.0, 680.0)),
+            ..Default::default()
         };
         eframe::run_native(
             "Rust Reel Forge",
