@@ -13,7 +13,7 @@ rayon = "1.8"
 regex = "1.10"
 walkdir = "2.4"
 rand = "0.8"
-eframe = "0.26"
+eframe = { version = "0.26", features = ["wgpu"] }
 egui = "0.26"
 rfd = "0.14"
 

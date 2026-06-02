@@ -520,10 +520,14 @@ fn main() {
             hardware_acceleration: eframe::HardwareAcceleration::Off,
             ..Default::default()
         };
-        eframe::run_native(
+        if let Err(e) = eframe::run_native(
             "Rust Reel Forge",
             options,
             Box::new(|cc| Box::new(ReelForgeApp::new(cc))),
-        ).unwrap();
+        ) {
+            let log_msg = format!("==================================================\n💥 RUST REEL FORGE FAILED TO LAUNCH!\n==================================================\nError: {}\n", e);
+            let _ = std::fs::write("crash_log.txt", log_msg);
+            println!("{}", e);
+        }
     }
 }
