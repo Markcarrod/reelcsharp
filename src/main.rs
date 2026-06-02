@@ -3,6 +3,7 @@ use rand::seq::SliceRandom;
 use rand::thread_rng;
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -34,6 +35,9 @@ struct Args {
 
     #[arg(long, default_value_t = 2, help = "Number of parallel workers for rendering")]
     workers: usize,
+
+    #[arg(long, default_value = "none", help = "Background blur strength: none, light, middle, heavy")]
+    blur: String,
 }
 
 fn list_files_with_extensions(folder: &Path, extensions: &[&str]) -> Vec<PathBuf> {
@@ -76,6 +80,7 @@ fn get_millisecond_stamp() -> String {
 // --------------------------------------------------
 fn run_cli(args: Args) {
     let script_path = args.script.expect("Script path is required in CLI mode");
+    let blur_strength = parser::BlurStrength::from_str(&args.blur);
     println!("--------------------------------------------------");
     println!("        🚀 RUST REEL FORGE — INITIALIZING         ");
     println!("--------------------------------------------------");
@@ -111,6 +116,7 @@ fn run_cli(args: Args) {
         music_files.shuffle(&mut rng);
     }
 
+    println!("Blur mode: {}", blur_strength.as_str());
     println!("🎨 Loading system font library...");
     let font = overlay::load_system_font();
 
@@ -156,7 +162,9 @@ fn run_cli(args: Args) {
                     &args.output,
                     &overlay_paths,
                     duration,
+                    blur_strength,
                     &stamp,
+                    None,
                 ) {
                     Ok(out_path) => Ok(out_path),
                     Err(e) => Err(format!("FFmpeg composition failed: {}", e)),
@@ -198,7 +206,13 @@ struct SavedConfig {
     overlay_folder: String,
     duration: String,
     workers: String,
+    #[serde(default = "default_blur_strength")]
+    blur_strength: String,
     script_text: String,
+}
+
+fn default_blur_strength() -> String {
+    "none".to_string()
 }
 
 fn load_config() -> Option<SavedConfig> {
@@ -230,10 +244,12 @@ struct AppState {
     overlay_folder: String,
     duration: String,
     workers: String,
+    blur_strength: String,
     script_text: String,
     logs: Arc<Mutex<Vec<String>>>,
     is_rendering: bool,
     status_msg: String,
+    stop_requested: Arc<AtomicBool>,
 }
 
 impl Default for AppState {
@@ -247,12 +263,14 @@ impl Default for AppState {
                 overlay_folder: saved.overlay_folder,
                 duration: saved.duration,
                 workers: saved.workers,
+                blur_strength: saved.blur_strength,
                 script_text: saved.script_text,
                 logs: Arc::new(Mutex::new(vec![
                     "Welcome to Rust Reel Forge! Restored saved configuration.".to_string(),
                 ])),
                 is_rendering: false,
                 status_msg: "Ready".to_string(),
+                stop_requested: Arc::new(AtomicBool::new(false)),
             }
         } else {
             Self {
@@ -262,10 +280,12 @@ impl Default for AppState {
                 overlay_folder: "output/overlays".to_string(),
                 duration: "12.5".to_string(),
                 workers: "4".to_string(),
+                blur_strength: "none".to_string(),
                 script_text: "TITLE:Fast Rust UI\nPerfect native execution.\nPure C++ and Rust performance.\nCTA:Accelerate your workflow.".to_string(),
                 logs: Arc::new(Mutex::new(vec!["Welcome to Rust Reel Forge! GUI is ready.".to_string()])),
                 is_rendering: false,
                 status_msg: "Ready".to_string(),
+                stop_requested: Arc::new(AtomicBool::new(false)),
             }
         }
     }
@@ -298,6 +318,7 @@ impl ReelForgeApp {
             overlay_folder: self.state.overlay_folder.clone(),
             duration: self.state.duration.clone(),
             workers: self.state.workers.clone(),
+            blur_strength: self.state.blur_strength.clone(),
             script_text: self.state.script_text.clone(),
         };
         save_config(&config);
@@ -314,8 +335,11 @@ impl ReelForgeApp {
 
         let duration: f32 = self.state.duration.parse().unwrap_or(12.5);
         let workers: usize = self.state.workers.parse().unwrap_or(4);
+        let blur_strength = parser::BlurStrength::from_str(&self.state.blur_strength);
         let script_content = self.state.script_text.clone();
+        let stop_requested = Arc::clone(&self.state.stop_requested);
 
+        self.state.stop_requested.store(false, Ordering::Relaxed);
         self.state.is_rendering = true;
         self.state.status_msg = "Rendering...".to_string();
 
@@ -329,6 +353,7 @@ impl ReelForgeApp {
             };
 
             log("🚀 Starting pure-Rust background render engine...");
+            log(&format!("Blur mode: {}", blur_strength.as_str()));
 
             // Parse temporary script
             let temp_script = PathBuf::from("temp_gui_script.txt");
@@ -384,6 +409,10 @@ impl ReelForgeApp {
                     .par_iter()
                     .enumerate()
                     .map(|(index, script)| {
+                        if stop_requested.load(Ordering::Relaxed) {
+                            return Err("Render stopped by user".to_string());
+                        }
+
                         let stamp = get_millisecond_stamp();
                         let d = script.duration.unwrap_or(duration);
                         let d = 13.0f32.min(12.0f32.max(d));
@@ -397,6 +426,9 @@ impl ReelForgeApp {
                         }
 
                         for point_index in 0..script.points.len() {
+                            if stop_requested.load(Ordering::Relaxed) {
+                                return Err("Render stopped by user".to_string());
+                            }
                             match overlay::make_overlay(script, point_index + 1, &overlay_dir, &stamp, &font) {
                                 Ok(path) => overlay_paths.push(path),
                                 Err(e) => return Err(format!("Overlay point failed: {}", e)),
@@ -412,7 +444,9 @@ impl ReelForgeApp {
                             &output_dir,
                             &overlay_paths,
                             d,
+                            blur_strength,
                             &stamp,
+                            Some(stop_requested.as_ref()),
                         ) {
                             Ok(out) => Ok(out),
                             Err(e) => Err(format!("FFmpeg failed: {}", e)),
@@ -437,6 +471,12 @@ impl ReelForgeApp {
             let _ = tx.send("__FINISHED__".to_string());
         });
     }
+
+    fn request_stop(&mut self) {
+        self.state.stop_requested.store(true, Ordering::Relaxed);
+        self.state.status_msg = "Stopping...".to_string();
+        self.add_log("Stop requested. Finishing active work and preventing new reels from starting.".to_string());
+    }
 }
 
 impl eframe::App for ReelForgeApp {
@@ -445,9 +485,16 @@ impl eframe::App for ReelForgeApp {
         if let Some(ref rx) = self.log_receiver {
             while let Ok(msg) = rx.try_recv() {
                 if msg == "__FINISHED__" {
+                    let was_stopping = self.state.stop_requested.load(Ordering::Relaxed);
                     self.state.is_rendering = false;
-                    self.state.status_msg = "Done ✅".to_string();
-                    self.add_log("🎉 Process finished!".to_string());
+                    self.state.stop_requested.store(false, Ordering::Relaxed);
+                    if was_stopping {
+                        self.state.status_msg = "Stopped".to_string();
+                        self.add_log("⏹ Render stopped.".to_string());
+                    } else {
+                        self.state.status_msg = "Done ✅".to_string();
+                        self.add_log("🎉 Process finished!".to_string());
+                    }
                 } else {
                     self.add_log(msg);
                 }
@@ -522,6 +569,18 @@ impl eframe::App for ReelForgeApp {
                             ui.text_edit_singleline(&mut self.state.workers);
                             ui.label("Parallel workers");
                             ui.end_row();
+
+                            ui.label("Blur:");
+                            egui::ComboBox::from_id_source("blur_strength")
+                                .selected_text(self.state.blur_strength.clone())
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut self.state.blur_strength, "none".to_string(), "none");
+                                    ui.selectable_value(&mut self.state.blur_strength, "light".to_string(), "light");
+                                    ui.selectable_value(&mut self.state.blur_strength, "middle".to_string(), "middle");
+                                    ui.selectable_value(&mut self.state.blur_strength, "heavy".to_string(), "heavy");
+                                });
+                            ui.label("Background blur strength");
+                            ui.end_row();
                         });
 
                     ui.add_space(8.0);
@@ -552,6 +611,10 @@ impl eframe::App for ReelForgeApp {
                 ui.horizontal(|ui| {
                     if ui.add_enabled(!self.state.is_rendering, egui::Button::new("🚀 Start Native Render")).clicked() {
                         self.trigger_render();
+                    }
+
+                    if ui.add_enabled(self.state.is_rendering, egui::Button::new("Stop")).clicked() {
+                        self.request_stop();
                     }
 
                     if ui.button("💾 Save Settings").clicked() {
@@ -635,4 +698,3 @@ fn main() {
         }
     }
 }
-

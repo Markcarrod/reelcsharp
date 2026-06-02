@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use crate::parser::Script;
+use std::sync::atomic::{AtomicBool, Ordering};
+use crate::parser::{BlurStrength, Script};
 use crate::overlay::{WIDTH, HEIGHT};
 
 pub fn render_video(
@@ -11,8 +12,19 @@ pub fn render_video(
     output_folder: &Path,
     overlay_paths: &[PathBuf],
     duration: f32,
+    blur_strength: BlurStrength,
     stamp: &str,
+    stop_requested: Option<&AtomicBool>,
 ) -> Result<PathBuf, std::io::Error> {
+    if let Some(flag) = stop_requested {
+        if flag.load(Ordering::Relaxed) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "Render stopped by user",
+            ));
+        }
+    }
+
     let video_path = if !videos.is_empty() {
         Some(&videos[index % videos.len()])
     } else {
@@ -25,12 +37,9 @@ pub fn render_video(
         None
     };
 
-    // Calculate reveal times matching the Python version
-    let final_hold = 2.5f32;
-    let hold_seconds = final_hold.min((duration * 0.35).max(0.5));
-    let reveal_window = (duration - hold_seconds).max(0.8);
-    let step = 0.8f32.max(3.0f32.min(reveal_window / (overlay_paths.len() as f32).max(1.0)));
-    let last_reveal_start = 0.0f32.max(reveal_window - 0.1);
+    // Reveal each new text layer at a fixed 2.5 second interval.
+    let step = 2.5f32;
+    let last_reveal_start = 0.0f32.max(duration - 0.1);
 
     // Build FFmpeg command
     let mut cmd = Command::new("ffmpeg");
@@ -63,10 +72,16 @@ pub fn render_video(
 
     // 1. Process background video: scale, crop to 1080x1920, and darken by 42%
     if video_path.is_some() {
-        filters.push(format!(
-            "[0:v]scale=w={}:h={}:force_original_aspect_ratio=increase,crop={}:{},drawbox=t=fill:color=black@0.42[bg]",
+        let mut bg_chain = format!(
+            "[0:v]scale=w={}:h={}:force_original_aspect_ratio=increase,crop={}:{}",
             WIDTH, HEIGHT, WIDTH, HEIGHT
-        ));
+        );
+        if let Some(blur_filter) = blur_strength.ffmpeg_filter() {
+            bg_chain.push(',');
+            bg_chain.push_str(blur_filter);
+        }
+        bg_chain.push_str(",drawbox=t=fill:color=black@0.42[bg]");
+        filters.push(bg_chain);
     } else {
         filters.push(format!("[0:v]drawbox=t=fill:color=black@0.42[bg]"));
     }
@@ -135,10 +150,19 @@ pub fn render_video(
 
     std::fs::create_dir_all(output_folder)?;
     let safe_title = crate::parser::slugify(if !script.code.is_empty() { &script.code } else { &script.title });
-    let output_path = output_folder.join(format!("{}-{}.mp4", safe_title, stamp));
+    let blur_suffix = blur_strength.as_str();
+    let output_path = output_folder.join(format!("{}-{}-{}.mp4", safe_title, blur_suffix, stamp));
     cmd.arg(&output_path);
 
     let output = cmd.output()?;
+    if let Some(flag) = stop_requested {
+        if flag.load(Ordering::Relaxed) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "Render stopped by user",
+            ));
+        }
+    }
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(std::io::Error::new(

@@ -12,6 +12,43 @@ pub struct Script {
     pub layout: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlurStrength {
+    None,
+    Light,
+    Middle,
+    Heavy,
+}
+
+impl BlurStrength {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Light => "light",
+            Self::Middle => "middle",
+            Self::Heavy => "heavy",
+        }
+    }
+
+    pub fn from_str(value: &str) -> Self {
+        match value.trim().to_lowercase().as_str() {
+            "light" => Self::Light,
+            "middle" | "medium" => Self::Middle,
+            "heavy" => Self::Heavy,
+            _ => Self::None,
+        }
+    }
+
+    pub fn ffmpeg_filter(self) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::Light => Some("gblur=sigma=8:steps=1"),
+            Self::Middle => Some("gblur=sigma=16:steps=2"),
+            Self::Heavy => Some("gblur=sigma=28:steps=2"),
+        }
+    }
+}
+
 pub fn slugify(value: &str) -> String {
     let re = Regex::new(r"[^a-zA-Z0-9]+").unwrap();
     let slug = re.replace_all(value, "-").to_lowercase();
