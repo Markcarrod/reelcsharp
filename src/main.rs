@@ -517,6 +517,7 @@ fn main() {
         let options = eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
                 .with_inner_size(egui::vec2(780.0, 680.0)),
+            hardware_acceleration: eframe::HardwareAcceleration::Off,
             ..Default::default()
         };
         eframe::run_native(
