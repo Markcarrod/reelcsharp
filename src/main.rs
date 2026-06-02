@@ -492,6 +492,20 @@ impl eframe::App for ReelForgeApp {
 //               APPLICATION MAIN ENTRY
 // --------------------------------------------------
 fn main() {
+    // Setup robust panic logger to write crashes to a file on RDP
+    std::panic::set_hook(Box::new(|info| {
+        let msg = if let Some(s) = info.payload().downcast_ref::<&str>() {
+            s.to_string()
+        } else if let Some(s) = info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "Unknown error".to_string()
+        };
+        let location = info.location().map(|loc| format!("at {}:{}", loc.file(), loc.line())).unwrap_or_default();
+        let log_msg = format!("==================================================\n💥 RUST REEL FORGE CRASHED!\n==================================================\nError: {}\nLocation: {}\n\nIf you are on an RDP, it might be due to missing OpenGL hardware acceleration. Try configuring RDP hardware graphics or install standard Windows system fonts.\n", msg, location);
+        let _ = std::fs::write("crash_log.txt", log_msg);
+    }));
+
     let args = Args::parse();
 
     if args.script.is_some() {
