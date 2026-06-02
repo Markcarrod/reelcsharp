@@ -190,6 +190,39 @@ fn run_cli(args: Args) {
 // --------------------------------------------------
 //               NATIVE RUST GUI MODE
 // --------------------------------------------------
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+struct SavedConfig {
+    video_folder: String,
+    music_folder: String,
+    output_folder: String,
+    overlay_folder: String,
+    duration: String,
+    workers: String,
+    script_text: String,
+}
+
+fn load_config() -> Option<SavedConfig> {
+    let path = Path::new("config/desktop_state.json");
+    if path.exists() {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            if let Ok(config) = serde_json::from_str::<SavedConfig>(&content) {
+                return Some(config);
+            }
+        }
+    }
+    None
+}
+
+fn save_config(config: &SavedConfig) {
+    let path = Path::new("config/desktop_state.json");
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(serialized) = serde_json::to_string_pretty(config) {
+        let _ = std::fs::write(path, serialized);
+    }
+}
+
 struct AppState {
     video_folder: String,
     music_folder: String,
@@ -205,17 +238,35 @@ struct AppState {
 
 impl Default for AppState {
     fn default() -> Self {
-        Self {
-            video_folder: "input/videos".to_string(),
-            music_folder: "input/music".to_string(),
-            output_folder: "output/videos".to_string(),
-            overlay_folder: "output/overlays".to_string(),
-            duration: "12.5".to_string(),
-            workers: "4".to_string(),
-            script_text: "TITLE:Fast Rust UI\nPerfect native execution.\nPure C++ and Rust performance.\nCTA:Accelerate your workflow.".to_string(),
-            logs: Arc::new(Mutex::new(vec!["Welcome to Rust Reel Forge! GUI is ready.".to_string()])),
-            is_rendering: false,
-            status_msg: "Ready".to_string(),
+        // Attempt to load from saved JSON first, otherwise fallback to defaults
+        if let Some(saved) = load_config() {
+            Self {
+                video_folder: saved.video_folder,
+                music_folder: saved.music_folder,
+                output_folder: saved.output_folder,
+                overlay_folder: saved.overlay_folder,
+                duration: saved.duration,
+                workers: saved.workers,
+                script_text: saved.script_text,
+                logs: Arc::new(Mutex::new(vec![
+                    "Welcome to Rust Reel Forge! Restored saved configuration.".to_string(),
+                ])),
+                is_rendering: false,
+                status_msg: "Ready".to_string(),
+            }
+        } else {
+            Self {
+                video_folder: "input/videos".to_string(),
+                music_folder: "input/music".to_string(),
+                output_folder: "output/videos".to_string(),
+                overlay_folder: "output/overlays".to_string(),
+                duration: "12.5".to_string(),
+                workers: "4".to_string(),
+                script_text: "TITLE:Fast Rust UI\nPerfect native execution.\nPure C++ and Rust performance.\nCTA:Accelerate your workflow.".to_string(),
+                logs: Arc::new(Mutex::new(vec!["Welcome to Rust Reel Forge! GUI is ready.".to_string()])),
+                is_rendering: false,
+                status_msg: "Ready".to_string(),
+            }
         }
     }
 }
@@ -239,7 +290,23 @@ impl ReelForgeApp {
         }
     }
 
+    fn save_current_settings(&self) {
+        let config = SavedConfig {
+            video_folder: self.state.video_folder.clone(),
+            music_folder: self.state.music_folder.clone(),
+            output_folder: self.state.output_folder.clone(),
+            overlay_folder: self.state.overlay_folder.clone(),
+            duration: self.state.duration.clone(),
+            workers: self.state.workers.clone(),
+            script_text: self.state.script_text.clone(),
+        };
+        save_config(&config);
+    }
+
     fn trigger_render(&mut self) {
+        // Automatically save configuration on render launch
+        self.save_current_settings();
+
         let video_dir = PathBuf::from(&self.state.video_folder);
         let music_dir = PathBuf::from(&self.state.music_folder);
         let output_dir = PathBuf::from(&self.state.output_folder);
@@ -387,97 +454,134 @@ impl eframe::App for ReelForgeApp {
             }
         }
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ctx.set_visuals(egui::Visuals::dark());
+        ctx.set_visuals(egui::Visuals::dark());
 
-            ui.vertical_centered(|ui| {
-                ui.heading("🦀 Rust Reel Forge — Native GUI");
-                ui.label("Ultra-fast, hardware-accelerated video/overlay builder");
+        // --------------------------------------------------
+        // LEFT COLUMN PANEL: Independent scrollable layouts
+        // --------------------------------------------------
+        egui::SidePanel::left("left_config_panel")
+            .resizable(false)
+            .default_width(450.0)
+            .show(ctx, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(8.0);
+                    ui.heading("🦀 Rust Reel Forge");
+                    ui.label("Configuration & Layout Settings");
+                    ui.add_space(4.0);
+                });
+                ui.separator();
+
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    // Config Form Grid
+                    egui::Grid::new("config_grid")
+                        .num_columns(3)
+                        .spacing([8.0, 10.0])
+                        .show(ui, |ui| {
+                            ui.label("Videos Folder:");
+                            ui.text_edit_singleline(&mut self.state.video_folder);
+                            if ui.button("Browse...").clicked() {
+                                if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                                    self.state.video_folder = path.to_string_lossy().to_string();
+                                }
+                            }
+                            ui.end_row();
+
+                            ui.label("Music Folder:");
+                            ui.text_edit_singleline(&mut self.state.music_folder);
+                            if ui.button("Browse...").clicked() {
+                                if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                                    self.state.music_folder = path.to_string_lossy().to_string();
+                                }
+                            }
+                            ui.end_row();
+
+                            ui.label("Output Folder:");
+                            ui.text_edit_singleline(&mut self.state.output_folder);
+                            if ui.button("Browse...").clicked() {
+                                if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                                    self.state.output_folder = path.to_string_lossy().to_string();
+                                }
+                            }
+                            ui.end_row();
+
+                            ui.label("Overlays Folder:");
+                            ui.text_edit_singleline(&mut self.state.overlay_folder);
+                            if ui.button("Browse...").clicked() {
+                                if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                                    self.state.overlay_folder = path.to_string_lossy().to_string();
+                                }
+                            }
+                            ui.end_row();
+
+                            ui.label("Duration (sec):");
+                            ui.text_edit_singleline(&mut self.state.duration);
+                            ui.label("(12.0 - 13.0)");
+                            ui.end_row();
+
+                            ui.label("Threads:");
+                            ui.text_edit_singleline(&mut self.state.workers);
+                            ui.label("Parallel workers");
+                            ui.end_row();
+                        });
+
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.add_space(4.0);
+                    ui.label("Script Editor:");
+                    ui.add(
+                        egui::TextEdit::multiline(&mut self.state.script_text)
+                            .font(egui::TextStyle::Monospace)
+                            .desired_width(f32::INFINITY)
+                            .desired_rows(12),
+                    );
+                    ui.add_space(10.0);
+                });
             });
-            ui.separator();
 
-            // Config Form Grid
-            egui::Grid::new("config_grid")
-                .num_columns(3)
-                .spacing([10.0, 10.0])
-                .show(ui, |ui| {
-                    ui.label("Videos Folder:");
-                    ui.text_edit_singleline(&mut self.state.video_folder);
-                    if ui.button("Browse...").clicked() {
-                        if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                            self.state.video_folder = path.to_string_lossy().to_string();
-                        }
+        // --------------------------------------------------
+        // RIGHT COLUMN PANEL: Controls & Realtime log console
+        // --------------------------------------------------
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.vertical(|ui| {
+                ui.add_space(8.0);
+                ui.heading("🚀 Execution Panel");
+                ui.label("Compile processes and stream logs");
+                ui.separator();
+
+                // Actions Layout
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(!self.state.is_rendering, egui::Button::new("🚀 Start Native Render")).clicked() {
+                        self.trigger_render();
                     }
-                    ui.end_row();
 
-                    ui.label("Music Folder:");
-                    ui.text_edit_singleline(&mut self.state.music_folder);
-                    if ui.button("Browse...").clicked() {
-                        if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                            self.state.music_folder = path.to_string_lossy().to_string();
-                        }
+                    if ui.button("💾 Save Settings").clicked() {
+                        self.save_current_settings();
+                        self.state.status_msg = "Settings Saved 💾".to_string();
+                        self.add_log("💾 Saved current configuration state to JSON.".to_string());
                     }
-                    ui.end_row();
 
-                    ui.label("Output Folder:");
-                    ui.text_edit_singleline(&mut self.state.output_folder);
-                    if ui.button("Browse...").clicked() {
-                        if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                            self.state.output_folder = path.to_string_lossy().to_string();
-                        }
-                    }
-                    ui.end_row();
-
-                    ui.label("Overlays Folder:");
-                    ui.text_edit_singleline(&mut self.state.overlay_folder);
-                    if ui.button("Browse...").clicked() {
-                        if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                            self.state.overlay_folder = path.to_string_lossy().to_string();
-                        }
-                    }
-                    ui.end_row();
-
-                    ui.label("Duration (sec):");
-                    ui.text_edit_singleline(&mut self.state.duration);
-                    ui.label("(12.0 - 13.0)");
-                    ui.end_row();
-
-                    ui.label("Threads:");
-                    ui.text_edit_singleline(&mut self.state.workers);
-                    ui.label("Parallel workers");
-                    ui.end_row();
+                    ui.add_space(20.0);
+                    ui.label("Status:");
+                    ui.colored_label(egui::Color32::from_rgb(0, 255, 128), &self.state.status_msg);
                 });
 
-            ui.separator();
-            ui.label("Script Editor:");
-            ui.add(
-                egui::TextEdit::multiline(&mut self.state.script_text)
-                    .font(egui::TextStyle::Monospace)
-                    .desired_width(f32::INFINITY)
-                    .desired_rows(8),
-            );
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(4.0);
+                ui.label("Realtime Console Logs:");
 
-            ui.separator();
-
-            // Bottom bar with controls
-            ui.horizontal(|ui| {
-                if ui.add_enabled(!self.state.is_rendering, egui::Button::new("🚀 Start Native Render")).clicked() {
-                    self.trigger_render();
-                }
-
-                ui.label(format!("Status: {}", self.state.status_msg));
-            });
-
-            ui.separator();
-            ui.label("Execution Logs:");
-            
-            // Render Logs Scroller
-            egui::ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
-                if let Ok(logs) = self.state.logs.lock() {
-                    for log in logs.iter() {
-                        ui.label(log);
-                    }
-                }
+                // Render Logs Scroller (takes up remaining vertical height)
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.vertical(|ui| {
+                            if let Ok(logs) = self.state.logs.lock() {
+                                for log in logs.iter() {
+                                    ui.label(log);
+                                }
+                            }
+                        });
+                    });
             });
         });
 
@@ -516,7 +620,7 @@ fn main() {
         println!("🚀 Launching native Rust GUI...");
         let options = eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
-                .with_inner_size(egui::vec2(780.0, 680.0)),
+                .with_inner_size(egui::vec2(920.0, 700.0)), // Expanded size to fit beautiful two-column layout
             hardware_acceleration: eframe::HardwareAcceleration::Off,
             ..Default::default()
         };
@@ -531,3 +635,4 @@ fn main() {
         }
     }
 }
+
