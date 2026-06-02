@@ -1,8 +1,29 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
+use rand::Rng;
 use crate::parser::{BlurStrength, Script};
 use crate::overlay::{WIDTH, HEIGHT};
+
+fn probe_media_duration(path: &Path) -> Option<f32> {
+    let output = Command::new("ffprobe")
+        .arg("-v")
+        .arg("error")
+        .arg("-show_entries")
+        .arg("format=duration")
+        .arg("-of")
+        .arg("default=noprint_wrappers=1:nokey=1")
+        .arg(path)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout.trim().parse::<f32>().ok().filter(|value| *value > 0.0)
+}
 
 pub fn render_video(
     script: &Script,
@@ -63,6 +84,14 @@ pub fn render_video(
 
     // Optional Audio Input
     if let Some(m_path) = music_path {
+        if let Some(track_duration) = probe_media_duration(m_path) {
+            let required_audio_tail = duration.max(15.0);
+            let max_start = (track_duration - required_audio_tail).max(0.0);
+            if max_start > 0.0 {
+                let audio_start = rand::thread_rng().gen_range(0.0..=max_start);
+                cmd.arg("-ss").arg(format!("{:.3}", audio_start));
+            }
+        }
         cmd.arg("-stream_loop").arg("-1");
         cmd.arg("-i").arg(m_path);
     }
