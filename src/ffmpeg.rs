@@ -83,13 +83,13 @@ pub fn render_video(
         // Frame safe rounding to 30fps
         let start_time = (raw_start * 30.0).round() / 30.0;
 
-        let faded_label = format!("[ovr_faded_{}]", i);
-        let next_bg_label = format!("[bg_next_{}]", i);
+        let faded_label = format!("ovr_faded_{}", i);
+        let next_bg_label = format!("bg_next_{}", i);
 
         // First layer (title) has no fade-in. Other layers have 0.1s soft fade-in.
         if i == 0 {
             filters.push(format!(
-                "[{}:v]copy[{}]",
+                "[{}:v]null[{}]",
                 overlay_input_index, faded_label
             ));
         } else {
@@ -100,17 +100,20 @@ pub fn render_video(
         }
 
         filters.push(format!(
-            "{}{}overlay=0:0{}[bg_next_{}]",
+            "{}[{}]overlay=0:0{}[{}]",
             current_input_label,
             faded_label,
             if i > 0 { format!(":enable='gte(t,{:.3})'", start_time) } else { "".to_string() },
-            i
+            next_bg_label
         ));
-        current_input_label = next_bg_label;
+        current_input_label = format!("[{}]", next_bg_label);
     }
 
-    // Strip the last output label suffix for mapping
-    let last_bg_label = format!("[bg_next_{}]", overlay_paths.len() - 1);
+    let last_bg_label = if overlay_paths.is_empty() {
+        "[bg]".to_string()
+    } else {
+        current_input_label.clone()
+    };
     
     cmd.arg("-filter_complex").arg(filters.join(";"));
     cmd.arg("-map").arg(last_bg_label);
