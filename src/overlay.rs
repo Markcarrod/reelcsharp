@@ -322,11 +322,7 @@ pub fn make_overlay(
                 Rgba([255, 255, 255, 255]),
                 Rgba([0, 0, 0, 185]),
             );
-        }
-
-        // Check if this is the last point, and draw CTA if present
-        let is_last = point_index == script.points.len() - 1;
-        if is_last && !script.cta.is_empty() {
+        } else if point_index == script.points.len() && !script.cta.is_empty() {
             let scale = PxScale::from(spec.cta.font_size);
             let lines = wrap_text(font, scale, &script.cta, spec.cta.width);
             draw_text_lines(

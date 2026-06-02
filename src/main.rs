@@ -154,6 +154,13 @@ fn run_cli(args: Args) {
                     }
                 }
 
+                if !script.cta.is_empty() {
+                    match overlay::make_overlay(script, script.points.len() + 1, &args.overlays, &stamp, &font) {
+                        Ok(path) => overlay_paths.push(path),
+                        Err(e) => return Err(format!("Failed to make CTA overlay: {}", e)),
+                    }
+                }
+
                 match ffmpeg::render_video(
                     script,
                     index,
@@ -432,6 +439,13 @@ impl ReelForgeApp {
                             match overlay::make_overlay(script, point_index + 1, &overlay_dir, &stamp, &font) {
                                 Ok(path) => overlay_paths.push(path),
                                 Err(e) => return Err(format!("Overlay point failed: {}", e)),
+                            }
+                        }
+
+                        if !script.cta.is_empty() {
+                            match overlay::make_overlay(script, script.points.len() + 1, &overlay_dir, &stamp, &font) {
+                                Ok(path) => overlay_paths.push(path),
+                                Err(e) => return Err(format!("Overlay CTA failed: {}", e)),
                             }
                         }
 
