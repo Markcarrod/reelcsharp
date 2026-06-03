@@ -34,7 +34,7 @@ pub fn render_video(
     overlay_paths: &[PathBuf],
     duration: f32,
     blur_strength: BlurStrength,
-    stamp: &str,
+    _stamp: &str,
     stop_requested: Option<&AtomicBool>,
 ) -> Result<PathBuf, std::io::Error> {
     if let Some(flag) = stop_requested {
@@ -179,8 +179,7 @@ pub fn render_video(
 
     std::fs::create_dir_all(output_folder)?;
     let safe_title = crate::parser::slugify(if !script.code.is_empty() { &script.code } else { &script.title });
-    let blur_suffix = blur_strength.as_str();
-    let output_path = output_folder.join(format!("{}-{}-{}.mp4", safe_title, blur_suffix, stamp));
+    let output_path = output_folder.join(format!("{}.mp4", safe_title));
     cmd.arg(&output_path);
 
     let output = cmd.output()?;
