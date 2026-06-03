@@ -103,6 +103,7 @@ fn parse_script_block(block: &str, index: usize) -> Script {
     let mut layout = "center_stack".to_string();
 
     let line_num_re = Regex::new(r"(?i)^line_?\d+$").unwrap();
+    let metadata_key_re = Regex::new(r"(?i)^[a-z][a-z0-9_ -]*$").unwrap();
     let list_prefix_re = Regex::new(r"^\s*(?:[-*]|\d+[.)])\s*").unwrap();
 
     for raw_line in block.lines() {
@@ -147,13 +148,15 @@ fn parse_script_block(block: &str, index: usize) -> Script {
                 k if line_num_re.is_match(k) => {
                     points.push(value.to_string());
                 }
-                "style" | "niche" => {
+                "style" | "niche" | "sub_style" => {
                     // Skip
                 }
                 _ => {
-                    // Treating as regular point line
-                    let cleaned = list_prefix_re.replace(line, "").into_owned();
-                    points.push(cleaned);
+                    // Ignore unknown metadata-style keys so parser labels never render.
+                    if !metadata_key_re.is_match(key.as_str()) {
+                        let cleaned = list_prefix_re.replace(line, "").into_owned();
+                        points.push(cleaned);
+                    }
                 }
             }
         } else {
