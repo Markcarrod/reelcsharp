@@ -130,6 +130,7 @@ class RustReelForgeDesktop(tk.Tk):
         ttk.Button(buttons, text="Pause", command=self.pause_render).pack(side="left", padx=(8, 0))
         ttk.Button(buttons, text="Resume", command=self.resume_render).pack(side="left", padx=(8, 0))
         ttk.Button(buttons, text="Stop", command=self.cancel_render).pack(side="left", padx=(8, 0))
+        ttk.Button(buttons, text="Clear Log", command=self.clear_log).pack(side="left", padx=(8, 0))
         ttk.Label(buttons, textvariable=self.status, font=("Helvetica", 10, "bold")).pack(side="right")
 
         progress_row = ttk.Frame(left)
@@ -265,6 +266,13 @@ class RustReelForgeDesktop(tk.Tk):
         self.log_text.see("end")
         self.log_text.configure(state="disabled")
         self.update_idletasks()
+
+    def clear_log(self) -> None:
+        self.log_text.configure(state="normal")
+        self.log_text.delete("1.0", "end")
+        self.log_text.configure(state="disabled")
+        self.batch_progress.set(0)
+        self.batch_progress_text.set("")
 
     def handle_backend_line(self, line: str) -> None:
         self.log(line)
