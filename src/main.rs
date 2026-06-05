@@ -672,33 +672,34 @@ fn run_cli(args: Args) {
             .par_iter()
             .enumerate()
             .map(|(index, script)| {
+                let script = parser::collapse_duplicate_title_point(script);
                 let stamp = get_millisecond_stamp();
                 let duration = script.duration.unwrap_or(args.duration).max(1.0);
 
                 println!("[Worker] Rendering script {}/{}: \"{}\"", index + 1, scripts.len(), script.title);
 
                 let mut overlay_paths = Vec::new();
-                match overlay::make_overlay(script, 0, &args.overlays, &stamp, &font) {
+                match overlay::make_overlay(&script, 0, &args.overlays, &stamp, &font) {
                     Ok(path) => overlay_paths.push(path),
                     Err(e) => return Err(format!("Failed to make title overlay: {}", e)),
                 }
 
                 for point_index in 0..script.points.len() {
-                    match overlay::make_overlay(script, point_index + 1, &args.overlays, &stamp, &font) {
+                    match overlay::make_overlay(&script, point_index + 1, &args.overlays, &stamp, &font) {
                         Ok(path) => overlay_paths.push(path),
                         Err(e) => return Err(format!("Failed to make point overlay {}: {}", point_index + 1, e)),
                     }
                 }
 
                 if !script.cta.is_empty() {
-                    match overlay::make_overlay(script, script.points.len() + 1, &args.overlays, &stamp, &font) {
+                    match overlay::make_overlay(&script, script.points.len() + 1, &args.overlays, &stamp, &font) {
                         Ok(path) => overlay_paths.push(path),
                         Err(e) => return Err(format!("Failed to make CTA overlay: {}", e)),
                     }
                 }
 
                 match ffmpeg::render_video(
-                    script,
+                    &script,
                     index,
                     &videos,
                     &music_files,
@@ -1063,13 +1064,14 @@ impl ReelForgeApp {
                             return Err("Render stopped by user".to_string());
                         }
 
+                        let script = parser::collapse_duplicate_title_point(script);
                         let stamp = get_millisecond_stamp();
                         let d = script.duration.unwrap_or(duration).max(1.0);
 
                         let _ = tx.send(format!("[Worker] Building text frames for Reel {}...", index + 1));
 
                         let mut overlay_paths = Vec::new();
-                        match overlay::make_overlay(script, 0, &overlay_dir, &stamp, &font) {
+                        match overlay::make_overlay(&script, 0, &overlay_dir, &stamp, &font) {
                             Ok(path) => overlay_paths.push(path),
                             Err(e) => return Err(format!("Overlay title failed: {}", e)),
                         }
@@ -1078,14 +1080,14 @@ impl ReelForgeApp {
                             if stop_requested.load(Ordering::Relaxed) {
                                 return Err("Render stopped by user".to_string());
                             }
-                            match overlay::make_overlay(script, point_index + 1, &overlay_dir, &stamp, &font) {
+                            match overlay::make_overlay(&script, point_index + 1, &overlay_dir, &stamp, &font) {
                                 Ok(path) => overlay_paths.push(path),
                                 Err(e) => return Err(format!("Overlay point failed: {}", e)),
                             }
                         }
 
                         if !script.cta.is_empty() {
-                            match overlay::make_overlay(script, script.points.len() + 1, &overlay_dir, &stamp, &font) {
+                            match overlay::make_overlay(&script, script.points.len() + 1, &overlay_dir, &stamp, &font) {
                                 Ok(path) => overlay_paths.push(path),
                                 Err(e) => return Err(format!("Overlay CTA failed: {}", e)),
                             }
@@ -1093,7 +1095,7 @@ impl ReelForgeApp {
 
                         let _ = tx.send(format!("[Worker] Multiplexing FFmpeg render for Reel {}...", index + 1));
                         match ffmpeg::render_video(
-                            script,
+                            &script,
                             index,
                             &videos,
                             &music_files,
