@@ -935,6 +935,7 @@ fn main() {
         let options = eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
                 .with_inner_size(egui::vec2(920.0, 700.0)), // Expanded size to fit beautiful two-column layout
+            renderer: eframe::Renderer::Glow,
             hardware_acceleration: eframe::HardwareAcceleration::Off,
             ..Default::default()
         };
