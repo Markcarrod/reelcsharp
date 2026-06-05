@@ -1,8 +1,11 @@
 import concurrent.futures
+import ctypes
+import ctypes.wintypes as wintypes
 import json
 import math
 import os
 import re
+import signal
 import subprocess
 import sys
 import threading
@@ -43,6 +46,7 @@ class RustReelForgeDesktop(tk.Tk):
         self.batch_progress_text = tk.StringVar(value="")
         self.preview_image: ImageTk.PhotoImage | None = None
         self.process: subprocess.Popen | None = None
+        self.is_paused = False
 
         self._build_ui()
         self.load_saved_state()
@@ -114,7 +118,9 @@ class RustReelForgeDesktop(tk.Tk):
         ttk.Button(buttons, text="Use Editor", command=self.use_editor_script).pack(side="left", padx=(8, 0))
         ttk.Button(buttons, text="Save Settings", command=self.save_input).pack(side="left", padx=(8, 0))
         ttk.Button(buttons, text="Start Rust Render", command=self.start_render, style="Accent.TButton").pack(side="left", padx=(8, 0))
-        ttk.Button(buttons, text="Cancel Render", command=self.cancel_render).pack(side="left", padx=(8, 0))
+        ttk.Button(buttons, text="Pause", command=self.pause_render).pack(side="left", padx=(8, 0))
+        ttk.Button(buttons, text="Resume", command=self.resume_render).pack(side="left", padx=(8, 0))
+        ttk.Button(buttons, text="Stop", command=self.cancel_render).pack(side="left", padx=(8, 0))
         ttk.Label(buttons, textvariable=self.status, font=("Helvetica", 10, "bold")).pack(side="right")
 
         progress_row = ttk.Frame(left)
@@ -262,9 +268,111 @@ class RustReelForgeDesktop(tk.Tk):
     def cancel_render(self) -> None:
         if self.process:
             self.log("🛑 Cancelling current Rust compile/render process...")
-            self.process.terminate()
-            self.process = None
+            self.stop_process_tree(self.process)
+            if self.process is proc:
+                self.process = None
+            self.is_paused = False
+            self.is_paused = False
             self.status.set("Cancelled")
+
+    def pause_render(self) -> None:
+        if self.process and not self.is_paused:
+            self.set_process_tree_suspended(self.process.pid, True)
+            self.is_paused = True
+            self.status.set("Paused")
+            self.log("Render paused.")
+
+    def resume_render(self) -> None:
+        if self.process and self.is_paused:
+            self.set_process_tree_suspended(self.process.pid, False)
+            self.is_paused = False
+            self.status.set("Rendering...")
+            self.log("Render resumed.")
+
+    def stop_process_tree(self, process: subprocess.Popen) -> None:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        else:
+            process.terminate()
+
+    def set_process_tree_suspended(self, root_pid: int, suspend: bool) -> None:
+        if os.name != "nt":
+            sig = signal.SIGSTOP if suspend else signal.SIGCONT
+            try:
+                os.kill(root_pid, sig)
+            except OSError as e:
+                self.log(f"Could not update process state: {e}")
+            return
+
+        action = self.suspend_pid if suspend else self.resume_pid
+        for pid in self.process_tree_pids(root_pid):
+            action(pid)
+
+    def process_tree_pids(self, root_pid: int) -> list[int]:
+        if os.name != "nt":
+            return [root_pid]
+
+        class PROCESSENTRY32(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", wintypes.DWORD),
+                ("cntUsage", wintypes.DWORD),
+                ("th32ProcessID", wintypes.DWORD),
+                ("th32DefaultHeapID", ctypes.POINTER(ctypes.c_ulong)),
+                ("th32ModuleID", wintypes.DWORD),
+                ("cntThreads", wintypes.DWORD),
+                ("th32ParentProcessID", wintypes.DWORD),
+                ("pcPriClassBase", ctypes.c_long),
+                ("dwFlags", wintypes.DWORD),
+                ("szExeFile", ctypes.c_char * 260),
+            ]
+
+        snapshot = ctypes.windll.kernel32.CreateToolhelp32Snapshot(0x00000002, 0)
+        if snapshot == wintypes.HANDLE(-1).value:
+            return [root_pid]
+
+        try:
+            entries: list[tuple[int, int]] = []
+            entry = PROCESSENTRY32()
+            entry.dwSize = ctypes.sizeof(PROCESSENTRY32)
+            if ctypes.windll.kernel32.Process32First(snapshot, ctypes.byref(entry)):
+                while True:
+                    entries.append((int(entry.th32ProcessID), int(entry.th32ParentProcessID)))
+                    if not ctypes.windll.kernel32.Process32Next(snapshot, ctypes.byref(entry)):
+                        break
+
+            pids = [root_pid]
+            changed = True
+            while changed:
+                changed = False
+                parents = set(pids)
+                for pid, parent_pid in entries:
+                    if parent_pid in parents and pid not in pids:
+                        pids.append(pid)
+                        changed = True
+            return list(reversed(pids))
+        finally:
+            ctypes.windll.kernel32.CloseHandle(snapshot)
+
+    def suspend_pid(self, pid: int) -> None:
+        self.call_nt_process_state(pid, "NtSuspendProcess")
+
+    def resume_pid(self, pid: int) -> None:
+        self.call_nt_process_state(pid, "NtResumeProcess")
+
+    def call_nt_process_state(self, pid: int, function_name: str) -> None:
+        process_suspend_resume = 0x0800
+        handle = ctypes.windll.kernel32.OpenProcess(process_suspend_resume, False, pid)
+        if not handle:
+            return
+        try:
+            getattr(ctypes.windll.ntdll, function_name)(handle)
+        finally:
+            ctypes.windll.kernel32.CloseHandle(handle)
 
     def get_rust_runner_command(self, script_path: Path) -> list[str]:
         # Path to precompiled release binary
@@ -314,6 +422,7 @@ class RustReelForgeDesktop(tk.Tk):
             temp_script_path.write_text(script_text, encoding="utf-8")
 
         self.status.set("Rendering...")
+        self.is_paused = False
         self.batch_progress.set(0)
         self.batch_progress_text.set("")
         self.log("\n==================================================")
@@ -331,8 +440,9 @@ class RustReelForgeDesktop(tk.Tk):
         cmd = self.get_rust_runner_command(temp_script)
         self.log(f"Running command: {' '.join(cmd)}\n")
 
+        proc = None
         try:
-            self.process = subprocess.Popen(
+            proc = subprocess.Popen(
                 cmd,
                 cwd=str(ROOT),
                 stdout=subprocess.PIPE,
@@ -344,16 +454,17 @@ class RustReelForgeDesktop(tk.Tk):
                 universal_newlines=True,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
             )
+            self.process = proc
 
             # Stream logs in real-time to UI
             while True:
-                line = self.process.stdout.readline()
-                if not line and self.process.poll() is not None:
+                line = proc.stdout.readline()
+                if not line and proc.poll() is not None:
                     break
                 if line:
                     self.after(0, self.handle_backend_line, line.rstrip())
 
-            rc = self.process.poll()
+            rc = proc.poll()
             if rc == 0:
                 self.after(0, self.status.set, "Done ✅")
                 self.after(0, self.log, "\n🎉 Rendering successfully completed!")

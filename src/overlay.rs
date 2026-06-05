@@ -24,37 +24,6 @@ pub struct LayoutSpec {
     pub marker: String,
 }
 
-pub fn layout_display_name(layout: &str) -> &'static str {
-    match normalize_layout(layout).as_str() {
-        "question_answer" => "Question Answer",
-        "list_style" => "List Style",
-        "center_stack" => "Center Stack",
-        "left_stack" => "Left Stack",
-        "right_stack" => "Right Stack",
-        "top_bottom" => "Top Bottom",
-        "one_word_hook" => "One Word Hook",
-        "quote_style" => "Quote Style",
-        "story_block" => "Story Block",
-        "progress_reveal" => "Progress Reveal",
-        "center_card" => "Center Card",
-        "two_column_split" => "Two Column Split",
-        "grid_layout" => "Grid Layout",
-        "masonry_layout" => "Masonry Layout",
-        "hero_list" => "Hero Plus List",
-        "alternating_rows" => "Alternating Rows",
-        "sidebar_layout" => "Sidebar Layout",
-        "collage_layout" => "Collage Layout",
-        "auto_fit_tiles" => "Auto Fit Tiles",
-        "tabbed_layout" => "Tabbed Layout",
-        "magazine_layout" => "Magazine Layout",
-        "template_rotation_layout" => "Template Rotation",
-        "priority_based_layout" => "Priority Based",
-        "adaptive_smart_layout" => "Adaptive Smart",
-        "fallback_universal_layout" => "Fallback Universal",
-        _ => "Center Stack",
-    }
-}
-
 pub fn get_layout_spec(layout: &str) -> LayoutSpec {
     match layout {
         "two_column_split" => LayoutSpec {
@@ -517,20 +486,6 @@ pub fn make_overlay(
             Rgba([0, 0, 0, 180]),
         );
 
-        let footer_scale = PxScale::from(28.0);
-        let footer_lines = vec![layout_display_name(&layout).to_string()];
-        draw_text_lines(
-            &mut image,
-            font,
-            footer_scale,
-            &footer_lines,
-            90.0,
-            1820.0,
-            900.0,
-            "center",
-            Rgba([220, 220, 220, 220]),
-            Rgba([0, 0, 0, 180]),
-        );
     } else {
         let point_index = layer_index - 1;
         if point_index < script.points.len() {
