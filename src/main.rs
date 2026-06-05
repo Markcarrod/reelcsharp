@@ -22,6 +22,11 @@ enum WorkerMode {
 }
 
 #[derive(Debug, Clone, Copy, Default)]
+struct AutoWorkerState {
+    locked_workers: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
 struct ResourceSnapshot {
     peak_cpu_percent: f32,
     peak_memory_percent: f32,
@@ -305,6 +310,7 @@ fn render_loaded_scripts<F>(
     overlay_root: &Path,
     default_duration: f32,
     worker_mode: WorkerMode,
+    mut auto_worker_state: Option<&mut AutoWorkerState>,
     blur_strength: parser::BlurStrength,
     stop_requested: Option<&AtomicBool>,
     logger: &F,
@@ -353,11 +359,22 @@ where
         WorkerMode::Auto => {
             logger(&format!("Blur mode: {} (auto workers)", blur_strength.as_str()));
             let max_workers = auto_worker_limit(scripts.len());
-            let mut next_worker = 2usize.min(max_workers).max(1);
-            let mut chosen_workers: Option<usize> = None;
+            let locked_start = auto_worker_state
+                .as_ref()
+                .and_then(|state| state.locked_workers)
+                .map(|workers| workers.min(max_workers).max(1));
+            let mut next_worker = locked_start.unwrap_or(2usize.min(max_workers).max(1));
+            let mut chosen_workers: Option<usize> = locked_start;
             let mut best_workers = next_worker;
-            let mut best_score = 0.0_f64;
+            let mut best_score = if locked_start.is_some() { 1.0 } else { 0.0 };
             let mut next_index = 0usize;
+
+            if let Some(locked) = locked_start {
+                logger(&format!(
+                    "Auto thread locked from previous file: {} workers will be reused for this script file.",
+                    locked
+                ));
+            }
 
             while next_index < scripts.len() {
                 if let Some(flag) = stop_requested {
@@ -433,18 +450,27 @@ where
 
                     if overloaded {
                         chosen_workers = Some(best_workers.max(1));
+                        if let Some(state) = auto_worker_state.as_deref_mut() {
+                            state.locked_workers = chosen_workers;
+                        }
                         logger(&format!(
                             "Auto thread settled on {} workers after hitting system pressure.",
                             chosen_workers.unwrap()
                         ));
                     } else if workers >= max_workers || next_index + chunk_size >= scripts.len() {
                         chosen_workers = Some(best_workers.max(1));
+                        if let Some(state) = auto_worker_state.as_deref_mut() {
+                            state.locked_workers = chosen_workers;
+                        }
                         logger(&format!(
                             "Auto thread settled on {} workers after finishing the ramp-up scan.",
                             chosen_workers.unwrap()
                         ));
                     } else if !improved && workers > 2 {
                         chosen_workers = Some(best_workers.max(1));
+                        if let Some(state) = auto_worker_state.as_deref_mut() {
+                            state.locked_workers = chosen_workers;
+                        }
                         logger(&format!(
                             "Auto thread settled on {} workers after throughput stopped improving.",
                             chosen_workers.unwrap()
@@ -479,6 +505,7 @@ fn render_scripts_from_file(
     overlay_root: &Path,
     default_duration: f32,
     worker_mode: WorkerMode,
+    auto_worker_state: Option<&mut AutoWorkerState>,
     blur_strength: parser::BlurStrength,
 ) -> Result<(usize, usize), String> {
     let scripts = parser::parse_scripts(script_path)
@@ -494,6 +521,7 @@ fn render_scripts_from_file(
         overlay_root,
         default_duration,
         worker_mode,
+        auto_worker_state,
         blur_strength,
         None,
         &|message| println!("{}", message),
@@ -815,6 +843,7 @@ impl ReelForgeApp {
                 let script_file_count = script_sources.len();
                 let mut grand_total_success = 0usize;
                 let mut grand_total_scripts = 0usize;
+                let mut auto_worker_state = AutoWorkerState::default();
 
                 for (file_index, script_file) in script_sources.iter().enumerate() {
                     if stop_requested.load(Ordering::Relaxed) {
@@ -851,6 +880,7 @@ impl ReelForgeApp {
                         &overlay_root,
                         duration,
                         worker_mode,
+                        Some(&mut auto_worker_state),
                         blur_strength,
                     ) {
                         Ok((success_count, total_count)) => {
@@ -1254,6 +1284,7 @@ fn main() {
         let script_file_count = script_sources.len();
         let mut grand_total_success = 0usize;
         let mut grand_total_scripts = 0usize;
+        let mut auto_worker_state = AutoWorkerState::default();
 
         for (file_index, script_file) in script_sources.iter().enumerate() {
             let stem = script_file
@@ -1292,6 +1323,7 @@ fn main() {
                 &overlay_root,
                 args.duration,
                 worker_mode,
+                Some(&mut auto_worker_state),
                 blur_strength,
             ) {
                 Ok((success_count, total_count)) => {
