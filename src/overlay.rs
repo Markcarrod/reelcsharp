@@ -258,14 +258,97 @@ fn text_block_height(font: &FontArc, scale: PxScale, lines: &[String]) -> f32 {
     }
 }
 
+fn strip_leading_list_number(value: &str) -> Option<String> {
+    let digit_end = value
+        .char_indices()
+        .take_while(|(_, ch)| ch.is_ascii_digit())
+        .map(|(idx, ch)| idx + ch.len_utf8())
+        .last()?;
+
+    let rest = &value[digit_end..];
+    if rest.is_empty() {
+        return None;
+    }
+
+    if !rest.starts_with(char::is_whitespace) && !rest.starts_with('.') && !rest.starts_with(')') {
+        return None;
+    }
+
+    let rest = rest.trim_start();
+    let rest = rest
+        .strip_prefix('.')
+        .or_else(|| rest.strip_prefix(')'))
+        .unwrap_or(rest)
+        .trim_start();
+
+    if rest.is_empty() {
+        None
+    } else {
+        Some(rest.to_string())
+    }
+}
+
+fn script_prefers_numbered_list(script: &Script) -> bool {
+    normalize_render_text(&script.title)
+        .chars()
+        .next()
+        .is_some_and(|ch| ch.is_ascii_digit())
+        || script
+            .points
+            .iter()
+            .map(|point| normalize_render_text(point))
+            .any(|point| strip_leading_list_number(&point).is_some())
+}
+
+fn point_text(script: &Script, spec: &LayoutSpec, layout: &str, point_index: usize) -> String {
+    let mut point = normalize_render_text(&script.points[point_index]);
+
+    if layout == "progress_reveal" {
+        return format!(
+            "{}/{}  {}",
+            point_index + 1,
+            script.points.len().max(1),
+            strip_leading_list_number(&point).unwrap_or(point)
+        );
+    }
+
+    if spec.marker == "- " && script_prefers_numbered_list(script) {
+        point = strip_leading_list_number(&point).unwrap_or(point);
+        return format!("{}. {}", point_index + 1, point);
+    }
+
+    normalize_render_text(&format!("{}{}", spec.marker, point))
+}
+
 fn point_text_lines(script: &Script, spec: &LayoutSpec, font: &FontArc, layout: &str, point_index: usize) -> Vec<String> {
     let scale = PxScale::from(spec.point.font_size);
-    let mut point = script.points[point_index].clone();
-    if layout == "progress_reveal" {
-        point = format!("{}/{}  {}", point_index + 1, script.points.len().max(1), point);
-    }
-    let text = normalize_render_text(&format!("{}{}", spec.marker, point));
+    let text = point_text(script, spec, layout, point_index);
     wrap_text(font, scale, &text, spec.point.width)
+}
+
+fn cta_position_y(
+    script: &Script,
+    spec: &LayoutSpec,
+    font: &FontArc,
+    layout: &str,
+    cta_lines: &[String],
+    cta_scale: PxScale,
+) -> f32 {
+    let point_scale = PxScale::from(spec.point.font_size);
+    let mut point_bottom = 0.0_f32;
+
+    for idx in 0..script.points.len() {
+        let lines = point_text_lines(script, spec, font, layout, idx);
+        let (_, y, _) = point_position(script, spec, font, layout, idx);
+        point_bottom = point_bottom.max(y + text_block_height(font, point_scale, &lines));
+    }
+
+    let gap = (spec.point.font_size * 0.55).max(34.0);
+    let desired_y = point_bottom + gap;
+    let cta_height = text_block_height(font, cta_scale, cta_lines);
+    let max_y = HEIGHT as f32 - cta_height - 105.0;
+
+    desired_y.max(spec.cta.y).min(max_y)
 }
 
 fn point_position(script: &Script, spec: &LayoutSpec, font: &FontArc, layout: &str, point_index: usize) -> (f32, f32, String) {
@@ -508,13 +591,14 @@ pub fn make_overlay(
             let scale = PxScale::from(spec.cta.font_size);
             let cta_text = normalize_render_text(&script.cta);
             let lines = wrap_text(font, scale, &cta_text, spec.cta.width);
+            let cta_y = cta_position_y(script, &spec, font, &layout, &lines, scale);
             draw_text_lines(
                 &mut image,
                 font,
                 scale,
                 &lines,
                 spec.cta.x,
-                spec.cta.y,
+                cta_y,
                 spec.cta.width,
                 &spec.cta.align,
                 Rgba([255, 255, 255, 240]),
