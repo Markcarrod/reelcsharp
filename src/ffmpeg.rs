@@ -98,7 +98,7 @@ pub fn render_video(
 
     let reveal_starts = build_reveal_starts(script, overlay_paths.len());
     let last_reveal_start = reveal_starts.last().copied().unwrap_or(0.0);
-    let effective_duration = duration.max(last_reveal_start + 5.0);
+    let effective_duration = duration.max(last_reveal_start + 2.0);
 
     // Build FFmpeg command
     let mut cmd = Command::new("ffmpeg");
