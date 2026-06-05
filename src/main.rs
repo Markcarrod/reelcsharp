@@ -307,6 +307,7 @@ where
                     }
                 }
 
+                let script = parser::collapse_duplicate_title_point(script);
                 let stamp = get_millisecond_stamp();
                 let duration = script.duration.unwrap_or(default_duration).max(1.0);
                 let script_number = global_start_index + index + 1;
@@ -320,7 +321,7 @@ where
                 ));
 
                 let mut overlay_paths = Vec::new();
-                match overlay::make_overlay(script, 0, overlay_root, &stamp, &font) {
+                match overlay::make_overlay(&script, 0, overlay_root, &stamp, &font) {
                     Ok(path) => overlay_paths.push(path),
                     Err(e) => return Err(format!("Failed to make title overlay: {}", e)),
                 }
@@ -331,21 +332,21 @@ where
                             return Err("Render stopped by user".to_string());
                         }
                     }
-                    match overlay::make_overlay(script, point_index + 1, overlay_root, &stamp, &font) {
+                    match overlay::make_overlay(&script, point_index + 1, overlay_root, &stamp, &font) {
                         Ok(path) => overlay_paths.push(path),
                         Err(e) => return Err(format!("Failed to make point overlay {}: {}", point_index + 1, e)),
                     }
                 }
 
                 if !script.cta.is_empty() {
-                    match overlay::make_overlay(script, script.points.len() + 1, overlay_root, &stamp, &font) {
+                    match overlay::make_overlay(&script, script.points.len() + 1, overlay_root, &stamp, &font) {
                         Ok(path) => overlay_paths.push(path),
                         Err(e) => return Err(format!("Failed to make CTA overlay: {}", e)),
                     }
                 }
 
                 match ffmpeg::render_video(
-                    script,
+                    &script,
                     global_start_index + index,
                     &videos,
                     &music_files,

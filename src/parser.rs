@@ -94,6 +94,39 @@ pub fn normalize_layout(value: &str) -> String {
     }
 }
 
+fn loose_text_key(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+pub fn collapse_duplicate_title_point(script: &Script) -> Script {
+    let Some(first_point) = script.points.first() else {
+        return script.clone();
+    };
+
+    if loose_text_key(&script.title) != loose_text_key(first_point) {
+        return script.clone();
+    }
+
+    let mut normalized = script.clone();
+    normalized.points.remove(0);
+    if !normalized.point_pause_counts_before.is_empty() {
+        normalized.point_pause_counts_before.remove(0);
+    }
+    normalized
+}
+
 pub fn parse_scripts<P: AsRef<Path>>(path: P) -> Result<Vec<Script>, std::io::Error> {
     let content = fs::read_to_string(path)?;
     let block_re = Regex::new(r"(?m)^\s*---+\s*$").unwrap();
