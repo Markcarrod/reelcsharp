@@ -40,7 +40,7 @@ class RustReelForgeDesktop(tk.Tk):
         self.overlay_folder = tk.StringVar(value=str(DEFAULT_OVERLAYS.resolve()))
         self.script_source = tk.StringVar(value="")
         self.duration = tk.StringVar(value="12.5")
-        self.workers = tk.StringVar(value="4")
+        self.workers = tk.StringVar(value="auto")
         self.blur_strength = tk.StringVar(value="none")
         self.status = tk.StringVar(value="Ready")
         self.batch_progress = tk.IntVar(value=0)
@@ -85,7 +85,7 @@ class RustReelForgeDesktop(tk.Tk):
         options.columnconfigure(3, weight=1)
         ttk.Label(options, text="Video Duration").grid(row=0, column=0, sticky="w")
         ttk.Entry(options, textvariable=self.duration, width=8).grid(row=0, column=1, sticky="w", padx=(8, 22))
-        ttk.Label(options, text="Parallel Threads").grid(row=0, column=2, sticky="w")
+        ttk.Label(options, text="Parallel Threads / auto").grid(row=0, column=2, sticky="w")
         ttk.Entry(options, textvariable=self.workers, width=8).grid(row=0, column=3, sticky="w", padx=(8, 0))
         ttk.Label(options, text="Blur").grid(row=1, column=0, sticky="w", pady=(8, 0))
         ttk.Combobox(

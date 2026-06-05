@@ -6,12 +6,27 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use sysinfo::{get_current_pid, System};
 use walkdir::WalkDir;
 
 mod parser;
 mod overlay;
 mod ffmpeg;
+
+#[derive(Debug, Clone, Copy)]
+enum WorkerMode {
+    Fixed(usize),
+    Auto,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct ResourceSnapshot {
+    peak_cpu_percent: f32,
+    peak_memory_percent: f32,
+    peak_process_memory_mb: u64,
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "rust_reel_forge", version = "0.1.0", about = "Stunning 9:16 reels generator written in pure high-performance Rust")]
@@ -34,8 +49,8 @@ struct Args {
     #[arg(long, default_value_t = 12.5, help = "Default video duration in seconds")]
     duration: f32,
 
-    #[arg(long, default_value_t = 2, help = "Number of parallel workers for rendering")]
-    workers: usize,
+    #[arg(long, default_value = "2", help = "Number of parallel workers for rendering, or 'auto'")]
+    workers: String,
 
     #[arg(long, default_value = "none", help = "Background blur strength: none, light, middle, heavy")]
     blur: String,
@@ -75,6 +90,61 @@ fn get_millisecond_stamp() -> String {
     }
 }
 
+fn parse_worker_mode(value: &str) -> WorkerMode {
+    let trimmed = value.trim();
+    if trimmed.eq_ignore_ascii_case("auto") {
+        WorkerMode::Auto
+    } else {
+        WorkerMode::Fixed(trimmed.parse::<usize>().unwrap_or(4).max(1))
+    }
+}
+
+fn auto_worker_limit(script_count: usize) -> usize {
+    let available = thread::available_parallelism()
+        .map(|value| value.get())
+        .unwrap_or(4)
+        .max(2);
+    available.min(script_count.max(1))
+}
+
+fn spawn_resource_monitor(stop_flag: Arc<AtomicBool>) -> thread::JoinHandle<ResourceSnapshot> {
+    thread::spawn(move || {
+        let mut system = System::new_all();
+        let current_pid = get_current_pid().ok();
+        let mut snapshot = ResourceSnapshot::default();
+
+        while !stop_flag.load(Ordering::Relaxed) {
+            system.refresh_cpu_usage();
+            system.refresh_memory();
+            if current_pid.is_some() {
+                system.refresh_processes_specifics(sysinfo::ProcessRefreshKind::everything());
+            }
+
+            snapshot.peak_cpu_percent = snapshot
+                .peak_cpu_percent
+                .max(system.global_cpu_info().cpu_usage());
+
+            let total_memory = system.total_memory();
+            if total_memory > 0 {
+                let used_percent = (system.used_memory() as f32 / total_memory as f32) * 100.0;
+                snapshot.peak_memory_percent = snapshot.peak_memory_percent.max(used_percent);
+            }
+
+            if let Some(pid) = current_pid {
+                if let Some(process) = system.process(pid) {
+                    snapshot.peak_process_memory_mb = snapshot
+                        .peak_process_memory_mb
+                        .max(process.memory() / (1024 * 1024));
+                }
+            }
+
+            thread::sleep(Duration::from_millis(500));
+        }
+
+        snapshot
+    })
+}
+
 fn collect_script_sources(script_path: &Path) -> Result<Vec<PathBuf>, String> {
     if script_path.is_file() {
         return Ok(vec![script_path.to_path_buf()]);
@@ -95,24 +165,24 @@ fn collect_script_sources(script_path: &Path) -> Result<Vec<PathBuf>, String> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn render_scripts_from_file(
-    script_path: &Path,
+fn render_script_chunk<F>(
+    scripts: &[parser::Script],
+    script_label: &str,
+    total_scripts: usize,
+    global_start_index: usize,
     video_root: &Path,
     music_root: &Path,
     output_root: &Path,
     overlay_root: &Path,
     default_duration: f32,
-    requested_workers: usize,
+    workers: usize,
     blur_strength: parser::BlurStrength,
-) -> Result<(usize, usize), String> {
-    let scripts = parser::parse_scripts(script_path)
-        .map_err(|e| format!("Failed to parse script file {}: {}", script_path.display(), e))?;
-    println!("Loaded {} script(s) from {}", scripts.len(), script_path.display());
-
-    if scripts.is_empty() {
-        return Ok((0, 0));
-    }
-
+    stop_requested: Option<&AtomicBool>,
+    logger: &F,
+) -> Result<Vec<Result<PathBuf, String>>, String>
+where
+    F: Fn(&str) + Sync,
+{
     let video_extensions = ["mp4", "mov", "mkv", "webm"];
     let audio_extensions = ["mp3", "wav", "m4a", "aac"];
 
@@ -120,50 +190,52 @@ fn render_scripts_from_file(
     let mut music_files = list_files_with_extensions(music_root, &audio_extensions);
 
     if videos.is_empty() {
-        println!("No background videos found; rendering on solid black background.");
+        logger("No background videos found; rendering on solid black background.");
     } else {
-        println!("Found {} background video(s)", videos.len());
+        logger(&format!("Found {} background video(s)", videos.len()));
         let mut rng = thread_rng();
         videos.shuffle(&mut rng);
     }
 
     if music_files.is_empty() {
-        println!("No music tracks found; rendering silent videos.");
+        logger("No music tracks found; rendering silent videos.");
     } else {
-        println!("Found {} music track(s)", music_files.len());
+        logger(&format!("Found {} music track(s)", music_files.len()));
         let mut rng = thread_rng();
         music_files.shuffle(&mut rng);
     }
 
-    println!("Blur mode: {}", blur_strength.as_str());
-    println!("Loading system font library...");
+    logger("Loading system font library...");
     let font = overlay::load_system_font();
-
-    let workers = requested_workers.max(1).min(scripts.len());
-    println!("Spinning up worker pool ({} parallel workers)...", workers);
+    logger(&format!("Spinning up worker pool ({} parallel workers)...", workers));
 
     let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(workers)
+        .num_threads(workers.max(1))
         .build()
         .map_err(|e| format!("Failed to initialize thread pool: {}", e))?;
 
-    let start_time = std::time::Instant::now();
-
-    let outputs: Vec<Result<PathBuf, String>> = pool.install(|| {
+    Ok(pool.install(|| {
         scripts
             .par_iter()
             .enumerate()
             .map(|(index, script)| {
+                if let Some(flag) = stop_requested {
+                    if flag.load(Ordering::Relaxed) {
+                        return Err("Render stopped by user".to_string());
+                    }
+                }
+
                 let stamp = get_millisecond_stamp();
                 let duration = script.duration.unwrap_or(default_duration).max(1.0);
+                let script_number = global_start_index + index + 1;
 
-                println!(
+                logger(&format!(
                     "[Worker] Rendering script {}/{} from {}: \"{}\"",
-                    index + 1,
-                    scripts.len(),
-                    script_path.display(),
+                    script_number,
+                    total_scripts,
+                    script_label,
                     script.title
-                );
+                ));
 
                 let mut overlay_paths = Vec::new();
                 match overlay::make_overlay(script, 0, overlay_root, &stamp, &font) {
@@ -172,6 +244,11 @@ fn render_scripts_from_file(
                 }
 
                 for point_index in 0..script.points.len() {
+                    if let Some(flag) = stop_requested {
+                        if flag.load(Ordering::Relaxed) {
+                            return Err("Render stopped by user".to_string());
+                        }
+                    }
                     match overlay::make_overlay(script, point_index + 1, overlay_root, &stamp, &font) {
                         Ok(path) => overlay_paths.push(path),
                         Err(e) => return Err(format!("Failed to make point overlay {}: {}", point_index + 1, e)),
@@ -187,7 +264,7 @@ fn render_scripts_from_file(
 
                 match ffmpeg::render_video(
                     script,
-                    index,
+                    global_start_index + index,
                     &videos,
                     &music_files,
                     output_root,
@@ -195,36 +272,232 @@ fn render_scripts_from_file(
                     duration,
                     blur_strength,
                     &stamp,
-                    None,
+                    stop_requested,
                 ) {
                     Ok(out_path) => Ok(out_path),
                     Err(e) => Err(format!("FFmpeg composition failed: {}", e)),
                 }
             })
             .collect()
-    });
+    }))
+}
 
-    let elapsed = start_time.elapsed();
-    println!("--------------------------------------------------");
-    println!("RENDERING DONE");
-    println!("--------------------------------------------------");
-    println!("Total elapsed time: {:.2?}", elapsed);
+fn auto_chunk_size(workers: usize, remaining: usize, tuning: bool) -> usize {
+    let target = if tuning {
+        (workers * 2).max(2)
+    } else {
+        (workers * 4).max(4)
+    };
+    target.min(remaining.max(1))
+}
+
+fn auto_should_back_off(snapshot: ResourceSnapshot) -> bool {
+    snapshot.peak_cpu_percent >= 92.0 || snapshot.peak_memory_percent >= 88.0
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_loaded_scripts<F>(
+    scripts: &[parser::Script],
+    script_label: &str,
+    video_root: &Path,
+    music_root: &Path,
+    output_root: &Path,
+    overlay_root: &Path,
+    default_duration: f32,
+    worker_mode: WorkerMode,
+    blur_strength: parser::BlurStrength,
+    stop_requested: Option<&AtomicBool>,
+    logger: &F,
+) -> Result<(usize, usize), String>
+where
+    F: Fn(&str) + Sync,
+{
+    if scripts.is_empty() {
+        return Ok((0, 0));
+    }
 
     let mut success_count = 0;
-    for (i, res) in outputs.iter().enumerate() {
-        match res {
-            Ok(path) => {
-                success_count += 1;
-                println!("  Reel {}: {:?}", i + 1, path.file_name().unwrap());
+    let start_time = Instant::now();
+
+    match worker_mode {
+        WorkerMode::Fixed(requested_workers) => {
+            logger(&format!("Blur mode: {}", blur_strength.as_str()));
+            let workers = requested_workers.max(1).min(scripts.len());
+            let outputs = render_script_chunk(
+                scripts,
+                script_label,
+                scripts.len(),
+                0,
+                video_root,
+                music_root,
+                output_root,
+                overlay_root,
+                default_duration,
+                workers,
+                blur_strength,
+                stop_requested,
+                logger,
+            )?;
+            for (i, res) in outputs.iter().enumerate() {
+                match res {
+                    Ok(path) => {
+                        success_count += 1;
+                        logger(&format!("  Reel {}: {:?}", i + 1, path.file_name().unwrap()));
+                    }
+                    Err(e) => {
+                        logger(&format!("  Reel {}: Error -> {}", i + 1, e));
+                    }
+                }
             }
-            Err(e) => {
-                eprintln!("  Reel {}: Error -> {}", i + 1, e);
+        }
+        WorkerMode::Auto => {
+            logger(&format!("Blur mode: {} (auto workers)", blur_strength.as_str()));
+            let max_workers = auto_worker_limit(scripts.len());
+            let mut next_worker = 2usize.min(max_workers).max(1);
+            let mut chosen_workers: Option<usize> = None;
+            let mut best_workers = next_worker;
+            let mut best_score = 0.0_f64;
+            let mut next_index = 0usize;
+
+            while next_index < scripts.len() {
+                if let Some(flag) = stop_requested {
+                    if flag.load(Ordering::Relaxed) {
+                        break;
+                    }
+                }
+
+                let tuning = chosen_workers.is_none();
+                let workers = chosen_workers.unwrap_or(next_worker).min(scripts.len() - next_index).max(1);
+                let chunk_size = auto_chunk_size(workers, scripts.len() - next_index, tuning);
+                logger(&format!(
+                    "Auto thread pass: rendering reels {}-{} with {} workers...",
+                    next_index + 1,
+                    next_index + chunk_size,
+                    workers
+                ));
+
+                let monitor_stop = Arc::new(AtomicBool::new(false));
+                let monitor_handle = spawn_resource_monitor(monitor_stop.clone());
+                let chunk_start = Instant::now();
+                let outputs = render_script_chunk(
+                    &scripts[next_index..next_index + chunk_size],
+                    script_label,
+                    scripts.len(),
+                    next_index,
+                    video_root,
+                    music_root,
+                    output_root,
+                    overlay_root,
+                    default_duration,
+                    workers,
+                    blur_strength,
+                    stop_requested,
+                    logger,
+                )?;
+                monitor_stop.store(true, Ordering::Relaxed);
+                let snapshot = monitor_handle.join().unwrap_or_default();
+                let elapsed = chunk_start.elapsed();
+                let score = chunk_size as f64 / elapsed.as_secs_f64().max(0.1);
+
+                for (offset, res) in outputs.iter().enumerate() {
+                    match res {
+                        Ok(path) => {
+                            success_count += 1;
+                            logger(&format!(
+                                "  Reel {}: {:?}",
+                                next_index + offset + 1,
+                                path.file_name().unwrap()
+                            ));
+                        }
+                        Err(e) => {
+                            logger(&format!("  Reel {}: Error -> {}", next_index + offset + 1, e));
+                        }
+                    }
+                }
+
+                logger(&format!(
+                    "Auto thread stats: {:.2} reels/sec, CPU peak {:.0}%, memory peak {:.0}%, app peak {} MB",
+                    score,
+                    snapshot.peak_cpu_percent,
+                    snapshot.peak_memory_percent,
+                    snapshot.peak_process_memory_mb
+                ));
+
+                if tuning {
+                    let overloaded = auto_should_back_off(snapshot);
+                    let improved = best_score == 0.0 || score > best_score * 1.05;
+                    if improved && !overloaded {
+                        best_score = score;
+                        best_workers = workers;
+                    }
+
+                    if overloaded {
+                        chosen_workers = Some(best_workers.max(1));
+                        logger(&format!(
+                            "Auto thread settled on {} workers after hitting system pressure.",
+                            chosen_workers.unwrap()
+                        ));
+                    } else if workers >= max_workers || next_index + chunk_size >= scripts.len() {
+                        chosen_workers = Some(best_workers.max(1));
+                        logger(&format!(
+                            "Auto thread settled on {} workers after finishing the ramp-up scan.",
+                            chosen_workers.unwrap()
+                        ));
+                    } else if !improved && workers > 2 {
+                        chosen_workers = Some(best_workers.max(1));
+                        logger(&format!(
+                            "Auto thread settled on {} workers after throughput stopped improving.",
+                            chosen_workers.unwrap()
+                        ));
+                    } else {
+                        next_worker = (workers + 2).min(max_workers);
+                        logger(&format!("Auto thread increasing to {} workers for the next pass.", next_worker));
+                    }
+                }
+
+                next_index += chunk_size;
             }
         }
     }
-    println!("Rendered {}/{} videos successfully.", success_count, scripts.len());
+
+    let elapsed = start_time.elapsed();
+    logger("--------------------------------------------------");
+    logger("RENDERING DONE");
+    logger("--------------------------------------------------");
+    logger(&format!("Total elapsed time: {:.2?}", elapsed));
+    logger(&format!("Rendered {}/{} videos successfully.", success_count, scripts.len()));
 
     Ok((success_count, scripts.len()))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_scripts_from_file(
+    script_path: &Path,
+    video_root: &Path,
+    music_root: &Path,
+    output_root: &Path,
+    overlay_root: &Path,
+    default_duration: f32,
+    worker_mode: WorkerMode,
+    blur_strength: parser::BlurStrength,
+) -> Result<(usize, usize), String> {
+    let scripts = parser::parse_scripts(script_path)
+        .map_err(|e| format!("Failed to parse script file {}: {}", script_path.display(), e))?;
+    println!("Loaded {} script(s) from {}", scripts.len(), script_path.display());
+
+    render_loaded_scripts(
+        &scripts,
+        &script_path.display().to_string(),
+        video_root,
+        music_root,
+        output_root,
+        overlay_root,
+        default_duration,
+        worker_mode,
+        blur_strength,
+        None,
+        &|message| println!("{}", message),
+    )
 }
 
 // --------------------------------------------------
@@ -273,7 +546,12 @@ fn run_cli(args: Args) {
     println!("🎨 Loading system font library...");
     let font = overlay::load_system_font();
 
-    let workers = args.workers.max(1).min(scripts.len());
+    let workers = match parse_worker_mode(&args.workers) {
+        WorkerMode::Fixed(count) => count,
+        WorkerMode::Auto => auto_worker_limit(scripts.len()),
+    }
+    .max(1)
+    .min(scripts.len());
     println!("🧵 Spinning up worker pool ({} parallel workers)...", workers);
 
     let pool = rayon::ThreadPoolBuilder::new()
@@ -443,7 +721,7 @@ impl Default for AppState {
                 overlay_folder: "output/overlays".to_string(),
                 script_source: "".to_string(),
                 duration: "12.5".to_string(),
-                workers: "4".to_string(),
+                workers: "auto".to_string(),
                 blur_strength: "none".to_string(),
                 script_text: "TITLE:Fast Rust UI\nPerfect native execution.\nPure C++ and Rust performance.\nCTA:Accelerate your workflow.".to_string(),
                 logs: Arc::new(Mutex::new(vec!["Welcome to Rust Reel Forge! GUI is ready.".to_string()])),
@@ -500,6 +778,7 @@ impl ReelForgeApp {
 
         let duration: f32 = self.state.duration.parse().unwrap_or(12.5);
         let workers: usize = self.state.workers.parse().unwrap_or(4);
+        let worker_mode = parse_worker_mode(&self.state.workers);
         let blur_strength = parser::BlurStrength::from_str(&self.state.blur_strength);
         let script_source = self.state.script_source.trim().to_string();
         let script_content = self.state.script_text.clone();
@@ -571,7 +850,7 @@ impl ReelForgeApp {
                         &output_root,
                         &overlay_root,
                         duration,
-                        workers,
+                        worker_mode,
                         blur_strength,
                     ) {
                         Ok((success_count, total_count)) => {
@@ -826,7 +1105,7 @@ impl eframe::App for ReelForgeApp {
 
                             ui.label("Threads:");
                             ui.text_edit_singleline(&mut self.state.workers);
-                            ui.label("Parallel workers");
+                            ui.label("Parallel workers / auto");
                             ui.end_row();
 
                             ui.label("Blur:");
@@ -958,6 +1237,7 @@ fn main() {
     if let Some(script_path) = args.script.as_ref() {
         // Run as CLI tool
         let blur_strength = parser::BlurStrength::from_str(&args.blur);
+        let worker_mode = parse_worker_mode(&args.workers);
         println!("--------------------------------------------------");
         println!("        RUST REEL FORGE - INITIALIZING         ");
         println!("--------------------------------------------------");
@@ -1011,7 +1291,7 @@ fn main() {
                 &output_root,
                 &overlay_root,
                 args.duration,
-                args.workers,
+                worker_mode,
                 blur_strength,
             ) {
                 Ok((success_count, total_count)) => {
