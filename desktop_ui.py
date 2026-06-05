@@ -41,6 +41,7 @@ class RustReelForgeDesktop(tk.Tk):
         self.script_source = tk.StringVar(value="")
         self.duration = tk.StringVar(value="12.5")
         self.workers = tk.StringVar(value="4")
+        self.blur_strength = tk.StringVar(value="none")
         self.status = tk.StringVar(value="Ready")
         self.batch_progress = tk.IntVar(value=0)
         self.batch_progress_text = tk.StringVar(value="")
@@ -86,6 +87,14 @@ class RustReelForgeDesktop(tk.Tk):
         ttk.Entry(options, textvariable=self.duration, width=8).grid(row=0, column=1, sticky="w", padx=(8, 22))
         ttk.Label(options, text="Parallel Threads").grid(row=0, column=2, sticky="w")
         ttk.Entry(options, textvariable=self.workers, width=8).grid(row=0, column=3, sticky="w", padx=(8, 0))
+        ttk.Label(options, text="Blur").grid(row=1, column=0, sticky="w", pady=(8, 0))
+        ttk.Combobox(
+            options,
+            textvariable=self.blur_strength,
+            values=("none", "light", "middle", "heavy"),
+            state="readonly",
+            width=10,
+        ).grid(row=1, column=1, sticky="w", padx=(8, 22), pady=(8, 0))
 
         # Script source + editor
         script_frame = ttk.LabelFrame(left, text="Reel Script Editor", padding=10)
@@ -212,6 +221,7 @@ class RustReelForgeDesktop(tk.Tk):
             "script_source": self.script_source.get(),
             "duration": self.duration.get(),
             "workers": self.workers.get(),
+            "blur_strength": self.blur_strength.get(),
             "script_text": self.script_text.get("1.0", "end").rstrip(),
         }
 
@@ -229,6 +239,7 @@ class RustReelForgeDesktop(tk.Tk):
         self.script_source.set(state.get("script_source", self.script_source.get()))
         self.duration.set(state.get("duration", self.duration.get()))
         self.workers.set(state.get("workers", self.workers.get()))
+        self.blur_strength.set(state.get("blur_strength", self.blur_strength.get()))
         saved_script = state.get("script_text")
         if saved_script:
             self.script_text.delete("1.0", "end")
@@ -397,6 +408,7 @@ class RustReelForgeDesktop(tk.Tk):
             "--overlays", self.overlay_folder.get(),
             "--duration", self.duration.get(),
             "--workers", self.workers.get(),
+            "--blur", self.blur_strength.get(),
         ])
         return cmd
 
