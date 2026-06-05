@@ -363,6 +363,8 @@ struct SavedConfig {
     music_folder: String,
     output_folder: String,
     overlay_folder: String,
+    #[serde(default)]
+    script_source: String,
     duration: String,
     workers: String,
     #[serde(default = "default_blur_strength")]
@@ -401,6 +403,7 @@ struct AppState {
     music_folder: String,
     output_folder: String,
     overlay_folder: String,
+    script_source: String,
     duration: String,
     workers: String,
     blur_strength: String,
@@ -420,6 +423,7 @@ impl Default for AppState {
                 music_folder: saved.music_folder,
                 output_folder: saved.output_folder,
                 overlay_folder: saved.overlay_folder,
+                script_source: saved.script_source,
                 duration: saved.duration,
                 workers: saved.workers,
                 blur_strength: saved.blur_strength,
@@ -437,6 +441,7 @@ impl Default for AppState {
                 music_folder: "input/music".to_string(),
                 output_folder: "output/videos".to_string(),
                 overlay_folder: "output/overlays".to_string(),
+                script_source: "".to_string(),
                 duration: "12.5".to_string(),
                 workers: "4".to_string(),
                 blur_strength: "none".to_string(),
@@ -475,6 +480,7 @@ impl ReelForgeApp {
             music_folder: self.state.music_folder.clone(),
             output_folder: self.state.output_folder.clone(),
             overlay_folder: self.state.overlay_folder.clone(),
+            script_source: self.state.script_source.clone(),
             duration: self.state.duration.clone(),
             workers: self.state.workers.clone(),
             blur_strength: self.state.blur_strength.clone(),
@@ -495,6 +501,7 @@ impl ReelForgeApp {
         let duration: f32 = self.state.duration.parse().unwrap_or(12.5);
         let workers: usize = self.state.workers.parse().unwrap_or(4);
         let blur_strength = parser::BlurStrength::from_str(&self.state.blur_strength);
+        let script_source = self.state.script_source.trim().to_string();
         let script_content = self.state.script_text.clone();
         let stop_requested = Arc::clone(&self.state.stop_requested);
 
@@ -513,6 +520,93 @@ impl ReelForgeApp {
 
             log("🚀 Starting pure-Rust background render engine...");
             log(&format!("Blur mode: {}", blur_strength.as_str()));
+
+            if !script_source.is_empty() {
+                let script_path = PathBuf::from(&script_source);
+                let script_sources = match collect_script_sources(&script_path) {
+                    Ok(files) => files,
+                    Err(e) => {
+                        log(&format!("❌ Script source error: {}", e));
+                        let _ = tx.send("__FINISHED__".to_string());
+                        return;
+                    }
+                };
+
+                let batch_mode = script_path.is_dir();
+                let script_file_count = script_sources.len();
+                let mut grand_total_success = 0usize;
+                let mut grand_total_scripts = 0usize;
+
+                for (file_index, script_file) in script_sources.iter().enumerate() {
+                    if stop_requested.load(Ordering::Relaxed) {
+                        log("Render stopped by user.");
+                        break;
+                    }
+
+                    let stem = script_file
+                        .file_stem()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("scripts");
+                    let output_root = if batch_mode {
+                        output_dir.join(parser::slugify(stem))
+                    } else {
+                        output_dir.clone()
+                    };
+                    let overlay_root = if batch_mode {
+                        overlay_dir.join(parser::slugify(stem))
+                    } else {
+                        overlay_dir.clone()
+                    };
+
+                    if batch_mode {
+                        log(&format!("Batch file {}/{}", file_index + 1, script_file_count));
+                    }
+                    log(&format!("Script source: {}", script_file.display()));
+                    log(&format!("Video output: {}", output_root.display()));
+
+                    match render_scripts_from_file(
+                        script_file,
+                        &video_dir,
+                        &music_dir,
+                        &output_root,
+                        &overlay_root,
+                        duration,
+                        workers,
+                        blur_strength,
+                    ) {
+                        Ok((success_count, total_count)) => {
+                            grand_total_success += success_count;
+                            grand_total_scripts += total_count;
+                            if batch_mode {
+                                log(&format!(
+                                    "Completed batch file {}/{} -> {} ({} / {} reels succeeded in this file)",
+                                    file_index + 1,
+                                    script_file_count,
+                                    script_file.display(),
+                                    success_count,
+                                    total_count
+                                ));
+                            }
+                        }
+                        Err(e) => {
+                            log(&format!("❌ {}", e));
+                        }
+                    }
+                }
+
+                if batch_mode {
+                    log("==================================================");
+                    log(&format!(
+                        "Batch finished: rendered {}/{} reels across {} script file(s).",
+                        grand_total_success,
+                        grand_total_scripts,
+                        script_file_count
+                    ));
+                }
+
+                let _ = tx.send("__FINISHED__".to_string());
+                return;
+            }
 
             // Parse temporary script
             let temp_script = PathBuf::from("temp_gui_script.txt");
@@ -751,6 +845,27 @@ impl eframe::App for ReelForgeApp {
                     ui.add_space(8.0);
                     ui.separator();
                     ui.add_space(4.0);
+                    ui.label("Script Source:");
+                    ui.horizontal(|ui| {
+                        ui.text_edit_singleline(&mut self.state.script_source);
+                        if ui.button("File...").clicked() {
+                            if let Some(path) = rfd::FileDialog::new()
+                                .add_filter("Text scripts", &["txt"])
+                                .pick_file()
+                            {
+                                self.state.script_source = path.to_string_lossy().to_string();
+                            }
+                        }
+                        if ui.button("Folder...").clicked() {
+                            if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                                self.state.script_source = path.to_string_lossy().to_string();
+                            }
+                        }
+                        if ui.button("Editor").clicked() {
+                            self.state.script_source.clear();
+                        }
+                    });
+                    ui.add_space(8.0);
                     ui.label("Script Editor:");
                     ui.add(
                         egui::TextEdit::multiline(&mut self.state.script_text)
