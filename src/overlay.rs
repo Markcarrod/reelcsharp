@@ -1,4 +1,5 @@
 use ab_glyph::{Font, FontArc, Glyph, PxScale, ScaleFont};
+use encoding_rs::WINDOWS_1252;
 use image::{Rgba, RgbaImage};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -24,8 +25,137 @@ pub struct LayoutSpec {
     pub marker: String,
 }
 
+pub fn layout_display_name(layout: &str) -> &'static str {
+    match normalize_layout(layout).as_str() {
+        "question_answer" => "Question Answer",
+        "list_style" => "List Style",
+        "center_stack" => "Single Stack",
+        "left_stack" => "Left Stack",
+        "right_stack" => "Right Stack",
+        "top_bottom" => "Timeline Layout",
+        "one_word_hook" => "One Word Hook",
+        "quote_style" => "Quote Style",
+        "story_block" => "Accordion Layout",
+        "progress_reveal" => "Progress Reveal",
+        "center_card" => "Centered Spotlight",
+        "two_column_split" => "Two Column Split",
+        "grid_layout" => "Grid Layout",
+        "masonry_layout" => "Masonry Layout",
+        "hero_list" => "Hero Plus List",
+        "alternating_rows" => "Alternating Rows",
+        "sidebar_layout" => "Sidebar Layout",
+        "collage_layout" => "Collage Layout",
+        "auto_fit_tiles" => "Auto Fit Tiles",
+        "tabbed_layout" => "Tabbed Layout",
+        "magazine_layout" => "Magazine Layout",
+        "template_rotation_layout" => "Template Rotation",
+        "priority_based_layout" => "Priority Based",
+        "adaptive_smart_layout" => "Adaptive Smart",
+        "fallback_universal_layout" => "Fallback Universal",
+        _ => "Center Stack",
+    }
+}
+
 pub fn get_layout_spec(layout: &str) -> LayoutSpec {
     match layout {
+        "two_column_split" => LayoutSpec {
+            title: LayoutParam { x: 80.0, y: 320.0, width: 420.0, align: "left".to_string(), font_size: 72.0 },
+            point: LayoutParam { x: 560.0, y: 500.0, width: 360.0, align: "left".to_string(), font_size: 44.0 },
+            point_offset_y: 185.0,
+            cta: LayoutParam { x: 560.0, y: 1470.0, width: 360.0, align: "left".to_string(), font_size: 30.0 },
+            marker: "".to_string(),
+        },
+        "grid_layout" => LayoutSpec {
+            title: LayoutParam { x: 100.0, y: 250.0, width: 880.0, align: "center".to_string(), font_size: 72.0 },
+            point: LayoutParam { x: 110.0, y: 640.0, width: 380.0, align: "left".to_string(), font_size: 42.0 },
+            point_offset_y: 0.0,
+            cta: LayoutParam { x: 100.0, y: 1520.0, width: 880.0, align: "center".to_string(), font_size: 30.0 },
+            marker: "".to_string(),
+        },
+        "masonry_layout" => LayoutSpec {
+            title: LayoutParam { x: 90.0, y: 260.0, width: 900.0, align: "left".to_string(), font_size: 70.0 },
+            point: LayoutParam { x: 95.0, y: 630.0, width: 430.0, align: "left".to_string(), font_size: 40.0 },
+            point_offset_y: 0.0,
+            cta: LayoutParam { x: 100.0, y: 1510.0, width: 880.0, align: "left".to_string(), font_size: 30.0 },
+            marker: "- ".to_string(),
+        },
+        "hero_list" => LayoutSpec {
+            title: LayoutParam { x: 80.0, y: 300.0, width: 920.0, align: "center".to_string(), font_size: 82.0 },
+            point: LayoutParam { x: 120.0, y: 860.0, width: 840.0, align: "left".to_string(), font_size: 46.0 },
+            point_offset_y: 108.0,
+            cta: LayoutParam { x: 110.0, y: 1515.0, width: 860.0, align: "center".to_string(), font_size: 30.0 },
+            marker: "- ".to_string(),
+        },
+        "alternating_rows" => LayoutSpec {
+            title: LayoutParam { x: 100.0, y: 260.0, width: 880.0, align: "center".to_string(), font_size: 72.0 },
+            point: LayoutParam { x: 110.0, y: 680.0, width: 860.0, align: "left".to_string(), font_size: 44.0 },
+            point_offset_y: 122.0,
+            cta: LayoutParam { x: 110.0, y: 1510.0, width: 860.0, align: "center".to_string(), font_size: 30.0 },
+            marker: "".to_string(),
+        },
+        "sidebar_layout" => LayoutSpec {
+            title: LayoutParam { x: 90.0, y: 320.0, width: 640.0, align: "left".to_string(), font_size: 74.0 },
+            point: LayoutParam { x: 120.0, y: 760.0, width: 610.0, align: "left".to_string(), font_size: 42.0 },
+            point_offset_y: 116.0,
+            cta: LayoutParam { x: 120.0, y: 1490.0, width: 610.0, align: "left".to_string(), font_size: 30.0 },
+            marker: "- ".to_string(),
+        },
+        "collage_layout" => LayoutSpec {
+            title: LayoutParam { x: 90.0, y: 280.0, width: 900.0, align: "center".to_string(), font_size: 76.0 },
+            point: LayoutParam { x: 120.0, y: 700.0, width: 360.0, align: "left".to_string(), font_size: 38.0 },
+            point_offset_y: 0.0,
+            cta: LayoutParam { x: 110.0, y: 1510.0, width: 860.0, align: "center".to_string(), font_size: 30.0 },
+            marker: "".to_string(),
+        },
+        "auto_fit_tiles" => LayoutSpec {
+            title: LayoutParam { x: 90.0, y: 280.0, width: 900.0, align: "center".to_string(), font_size: 74.0 },
+            point: LayoutParam { x: 110.0, y: 680.0, width: 380.0, align: "left".to_string(), font_size: 40.0 },
+            point_offset_y: 0.0,
+            cta: LayoutParam { x: 100.0, y: 1510.0, width: 880.0, align: "center".to_string(), font_size: 30.0 },
+            marker: "".to_string(),
+        },
+        "tabbed_layout" => LayoutSpec {
+            title: LayoutParam { x: 90.0, y: 330.0, width: 900.0, align: "left".to_string(), font_size: 72.0 },
+            point: LayoutParam { x: 120.0, y: 770.0, width: 840.0, align: "left".to_string(), font_size: 44.0 },
+            point_offset_y: 104.0,
+            cta: LayoutParam { x: 110.0, y: 1495.0, width: 860.0, align: "left".to_string(), font_size: 30.0 },
+            marker: "> ".to_string(),
+        },
+        "magazine_layout" => LayoutSpec {
+            title: LayoutParam { x: 90.0, y: 250.0, width: 900.0, align: "left".to_string(), font_size: 80.0 },
+            point: LayoutParam { x: 120.0, y: 760.0, width: 540.0, align: "left".to_string(), font_size: 42.0 },
+            point_offset_y: 128.0,
+            cta: LayoutParam { x: 120.0, y: 1510.0, width: 840.0, align: "left".to_string(), font_size: 30.0 },
+            marker: "".to_string(),
+        },
+        "template_rotation_layout" => LayoutSpec {
+            title: LayoutParam { x: 90.0, y: 470.0, width: 900.0, align: "center".to_string(), font_size: 80.0 },
+            point: LayoutParam { x: 150.0, y: 820.0, width: 780.0, align: "center".to_string(), font_size: 48.0 },
+            point_offset_y: 112.0,
+            cta: LayoutParam { x: 110.0, y: 1515.0, width: 860.0, align: "center".to_string(), font_size: 30.0 },
+            marker: "".to_string(),
+        },
+        "priority_based_layout" => LayoutSpec {
+            title: LayoutParam { x: 80.0, y: 310.0, width: 920.0, align: "center".to_string(), font_size: 88.0 },
+            point: LayoutParam { x: 120.0, y: 920.0, width: 840.0, align: "center".to_string(), font_size: 42.0 },
+            point_offset_y: 96.0,
+            cta: LayoutParam { x: 100.0, y: 1510.0, width: 880.0, align: "center".to_string(), font_size: 30.0 },
+            marker: "".to_string(),
+        },
+        "adaptive_smart_layout" => LayoutSpec {
+            title: LayoutParam { x: 90.0, y: 360.0, width: 900.0, align: "center".to_string(), font_size: 76.0 },
+            point: LayoutParam { x: 120.0, y: 760.0, width: 840.0, align: "center".to_string(), font_size: 46.0 },
+            point_offset_y: 112.0,
+            cta: LayoutParam { x: 110.0, y: 1510.0, width: 860.0, align: "center".to_string(), font_size: 30.0 },
+            marker: "".to_string(),
+        },
+        "fallback_universal_layout" => LayoutSpec {
+            title: LayoutParam { x: 90.0, y: 520.0, width: 900.0, align: "center".to_string(), font_size: 82.0 },
+            point: LayoutParam { x: 150.0, y: 820.0, width: 780.0, align: "center".to_string(), font_size: 48.0 },
+            point_offset_y: 108.0,
+            cta: LayoutParam { x: 110.0, y: 1510.0, width: 860.0, align: "center".to_string(), font_size: 30.0 },
+            marker: "".to_string(),
+        },
         "question_answer" => LayoutSpec {
             title: LayoutParam { x: 105.0, y: 500.0, width: 870.0, align: "center".to_string(), font_size: 76.0 },
             point: LayoutParam { x: 145.0, y: 825.0, width: 790.0, align: "center".to_string(), font_size: 52.0 },
@@ -137,16 +267,112 @@ pub fn first_hook_word(value: &str) -> String {
 }
 
 fn normalize_render_text(value: &str) -> String {
-    value
+    repair_mojibake(value)
         .chars()
         .map(|ch| match ch {
             '\u{2010}' | '\u{2011}' | '\u{2012}' | '\u{2013}' | '\u{2014}' | '\u{2212}' => '-',
             '\u{2018}' | '\u{2019}' | '\u{201B}' => '\'',
             '\u{201C}' | '\u{201D}' | '\u{201F}' => '"',
             '\u{00A0}' => ' ',
+            '\u{FE0F}' | '\u{20E3}' | '\u{200D}' => ' ',
             _ => ch,
         })
-        .collect()
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn repair_mojibake(value: &str) -> String {
+    let looks_broken = value.contains('â') || value.contains('ð') || value.contains('Ã');
+    if !looks_broken {
+        return value.to_string();
+    }
+
+    let (encoded, _, had_unmappables) = WINDOWS_1252.encode(value);
+    if had_unmappables {
+        return value.to_string();
+    }
+
+    match String::from_utf8(encoded.into_owned()) {
+        Ok(fixed) if fixed.chars().any(|ch| matches!(ch, '\u{2018}'..='\u{201F}' | '\u{2026}' | '\u{2010}'..='\u{2014}')) => fixed,
+        Ok(fixed) if !fixed.contains('â') && !fixed.contains('Ã') => fixed,
+        _ => value.to_string(),
+    }
+}
+
+fn line_step(font: &FontArc, scale: PxScale) -> f32 {
+    font.as_scaled(scale).height() + 12.0
+}
+
+fn text_block_height(font: &FontArc, scale: PxScale, lines: &[String]) -> f32 {
+    if lines.is_empty() {
+        0.0
+    } else {
+        line_step(font, scale) * lines.len() as f32
+    }
+}
+
+fn point_text_lines(script: &Script, spec: &LayoutSpec, font: &FontArc, layout: &str, point_index: usize) -> Vec<String> {
+    let scale = PxScale::from(spec.point.font_size);
+    let mut point = script.points[point_index].clone();
+    if layout == "progress_reveal" {
+        point = format!("{}/{}  {}", point_index + 1, script.points.len().max(1), point);
+    }
+    let text = normalize_render_text(&format!("{}{}", spec.marker, point));
+    wrap_text(font, scale, &text, spec.point.width)
+}
+
+fn point_position(script: &Script, spec: &LayoutSpec, font: &FontArc, layout: &str, point_index: usize) -> (f32, f32, String) {
+    let scale = PxScale::from(spec.point.font_size);
+    let block_gap = (spec.point.font_size * 0.45).max(26.0);
+
+    match layout {
+        "grid_layout" | "masonry_layout" | "collage_layout" | "auto_fit_tiles" => {
+            let column_gap = match layout {
+                "masonry_layout" | "collage_layout" => 465.0,
+                _ => 470.0,
+            };
+            let row_offset = match layout {
+                "masonry_layout" => 58.0,
+                "collage_layout" => 46.0,
+                _ => 0.0,
+            };
+            let mut left_y = spec.point.y;
+            let mut right_y = spec.point.y;
+
+            for idx in 0..point_index {
+                let prev_lines = point_text_lines(script, spec, font, layout, idx);
+                let prev_height = text_block_height(font, scale, &prev_lines) + block_gap;
+                if idx % 2 == 0 {
+                    left_y += prev_height;
+                } else {
+                    right_y += prev_height;
+                }
+            }
+
+            if point_index % 2 == 0 {
+                (spec.point.x, left_y, spec.point.align.clone())
+            } else {
+                (spec.point.x + column_gap, right_y + row_offset, spec.point.align.clone())
+            }
+        }
+        _ => {
+            let mut y = spec.point.y;
+            for idx in 0..point_index {
+                let prev_lines = point_text_lines(script, spec, font, layout, idx);
+                y += text_block_height(font, scale, &prev_lines) + block_gap;
+            }
+
+            let (x, align) = if layout == "alternating_rows" && point_index % 2 == 1 {
+                (spec.point.x + 120.0, "right".to_string())
+            } else {
+                (spec.point.x, spec.point.align.clone())
+            };
+
+            (x, y, align)
+        }
+    }
 }
 
 pub fn get_text_bbox(font: &FontArc, scale: PxScale, text: &str) -> (f32, f32) {
@@ -313,26 +539,36 @@ pub fn make_overlay(
             Rgba([255, 255, 255, 255]),
             Rgba([0, 0, 0, 180]),
         );
+
+        let footer_scale = PxScale::from(28.0);
+        let footer_lines = vec![layout_display_name(&layout).to_string()];
+        draw_text_lines(
+            &mut image,
+            font,
+            footer_scale,
+            &footer_lines,
+            90.0,
+            1820.0,
+            900.0,
+            "center",
+            Rgba([220, 220, 220, 220]),
+            Rgba([0, 0, 0, 180]),
+        );
     } else {
         let point_index = layer_index - 1;
         if point_index < script.points.len() {
             let scale = PxScale::from(spec.point.font_size);
-            let mut point = script.points[point_index].clone();
-            if layout == "progress_reveal" {
-                point = format!("{}/{}  {}", point_index + 1, script.points.len().max(1), point);
-            }
-            let text = normalize_render_text(&format!("{}{}", spec.marker, point));
-            let lines = wrap_text(font, scale, &text, spec.point.width);
-            let point_y = spec.point.y + (point_index as f32 * spec.point_offset_y);
+            let lines = point_text_lines(script, &spec, font, &layout, point_index);
+            let (point_x, point_y, point_align) = point_position(script, &spec, font, &layout, point_index);
             draw_text_lines(
                 &mut image,
                 font,
                 scale,
                 &lines,
-                spec.point.x,
+                point_x,
                 point_y,
                 spec.point.width,
-                &spec.point.align,
+                &point_align,
                 Rgba([255, 255, 255, 255]),
                 Rgba([0, 0, 0, 185]),
             );

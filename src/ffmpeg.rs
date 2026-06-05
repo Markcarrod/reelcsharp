@@ -5,6 +5,39 @@ use rand::Rng;
 use crate::parser::{BlurStrength, Script};
 use crate::overlay::{WIDTH, HEIGHT};
 
+fn build_reveal_starts(script: &Script, overlay_count: usize) -> Vec<f32> {
+    let step = 2.5f32;
+    let mut reveal_starts = Vec::with_capacity(overlay_count);
+
+    if script.all_at_once {
+        reveal_starts.resize(overlay_count, 0.0);
+        return reveal_starts;
+    }
+
+    let mut current_start = 0.0f32;
+    for overlay_index in 0..overlay_count {
+        reveal_starts.push(current_start);
+        if overlay_index == 0 {
+            current_start += step;
+            continue;
+        }
+
+        let point_index = overlay_index - 1;
+        if point_index < script.points.len() {
+            let pause_count = script
+                .point_pause_counts_before
+                .get(point_index)
+                .copied()
+                .unwrap_or(0);
+            current_start += step * (1.0 + pause_count as f32);
+        } else {
+            current_start += step * (1.0 + script.cta_pause_count_before as f32);
+        }
+    }
+
+    reveal_starts
+}
+
 fn probe_media_duration(path: &Path) -> Option<f32> {
     let output = Command::new("ffprobe")
         .arg("-v")
@@ -46,21 +79,25 @@ pub fn render_video(
         }
     }
 
-    let video_path = if !videos.is_empty() {
+    let video_path = if let Some(script_video) = script.video.as_ref() {
+        Some(script_video)
+    } else if !videos.is_empty() {
         Some(&videos[index % videos.len()])
     } else {
         None
     };
 
-    let music_path = if !music_files.is_empty() {
+    let music_path = if let Some(script_audio) = script.audio.as_ref() {
+        Some(script_audio)
+    } else if !music_files.is_empty() {
         Some(&music_files[index % music_files.len()])
     } else {
         None
     };
 
-    // Reveal each new text layer at a fixed 2.5 second interval.
-    let step = 2.5f32;
-    let last_reveal_start = 0.0f32.max(duration - 0.1);
+    let reveal_starts = build_reveal_starts(script, overlay_paths.len());
+    let last_reveal_start = reveal_starts.last().copied().unwrap_or(0.0);
+    let effective_duration = duration.max(last_reveal_start + 5.0);
 
     // Build FFmpeg command
     let mut cmd = Command::new("ffmpeg");
@@ -72,20 +109,20 @@ pub fn render_video(
         cmd.arg("-i").arg(v_path);
     } else {
         cmd.arg("-f").arg("lavfi");
-        cmd.arg("-i").arg(format!("color=c=black:s={}x{}:d={}", WIDTH, HEIGHT, duration));
+        cmd.arg("-i").arg(format!("color=c=black:s={}x{}:d={}", WIDTH, HEIGHT, effective_duration));
     }
 
     // Input 1..N: Overlay PNGs
     for path in overlay_paths {
         cmd.arg("-loop").arg("1");
-        cmd.arg("-t").arg(duration.to_string());
+        cmd.arg("-t").arg(effective_duration.to_string());
         cmd.arg("-i").arg(path);
     }
 
     // Optional Audio Input
     if let Some(m_path) = music_path {
         if let Some(track_duration) = probe_media_duration(m_path) {
-            let required_audio_tail = duration.max(15.0);
+            let required_audio_tail = effective_duration.max(15.0);
             let max_start = (track_duration - required_audio_tail).max(0.0);
             if max_start > 0.0 {
                 let audio_start = rand::thread_rng().gen_range(0.0..=max_start);
@@ -117,13 +154,10 @@ pub fn render_video(
 
     // 2. Apply fade and overlay for each PNG layer
     let mut current_input_label = "[bg]".to_string();
+
     for (i, _path) in overlay_paths.iter().enumerate() {
         let overlay_input_index = i + 1; // 1-indexed because input 0 is background
-        let raw_start = if i == 0 {
-            0.0
-        } else {
-            last_reveal_start.min(i as f32 * step)
-        };
+        let raw_start = reveal_starts.get(i).copied().unwrap_or(0.0);
         // Frame safe rounding to 30fps
         let start_time = (raw_start * 30.0).round() / 30.0;
 
@@ -131,7 +165,7 @@ pub fn render_video(
         let next_bg_label = format!("bg_next_{}", i);
 
         // First layer (title) has no fade-in. Other layers have 0.1s soft fade-in.
-        if i == 0 {
+        if i == 0 || script.all_at_once {
             filters.push(format!(
                 "[{}:v]null[{}]",
                 overlay_input_index, faded_label
@@ -147,7 +181,11 @@ pub fn render_video(
             "{}[{}]overlay=0:0{}[{}]",
             current_input_label,
             faded_label,
-            if i > 0 { format!(":enable='gte(t,{:.3})'", start_time) } else { "".to_string() },
+            if i > 0 && !script.all_at_once {
+                format!(":enable='gte(t,{:.3})'", start_time)
+            } else {
+                "".to_string()
+            },
             next_bg_label
         ));
         current_input_label = format!("[{}]", next_bg_label);
@@ -175,7 +213,7 @@ pub fn render_video(
     cmd.arg("-preset").arg("veryfast");
     cmd.arg("-pix_fmt").arg("yuv420p");
     cmd.arg("-movflags").arg("+faststart");
-    cmd.arg("-t").arg(duration.to_string());
+    cmd.arg("-t").arg(effective_duration.to_string());
 
     std::fs::create_dir_all(output_folder)?;
     let safe_title = crate::parser::slugify(if !script.code.is_empty() { &script.code } else { &script.title });

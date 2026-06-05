@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
+use walkdir::WalkDir;
 
 mod parser;
 mod overlay;
@@ -44,20 +45,19 @@ fn list_files_with_extensions(folder: &Path, extensions: &[&str]) -> Vec<PathBuf
     if !folder.exists() || !folder.is_dir() {
         return Vec::new();
     }
-    let mut files = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(folder) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_file() {
-                if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
-                    let ext_lower = ext.to_lowercase();
-                    if extensions.iter().any(|&e| e == ext_lower) {
-                        files.push(path);
-                    }
+    let mut files: Vec<PathBuf> = Vec::new();
+    for entry in WalkDir::new(folder).into_iter().filter_map(Result::ok) {
+        let path = entry.path();
+        if path.is_file() {
+            if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
+                let ext_lower = ext.to_lowercase();
+                if extensions.iter().any(|&e| e == ext_lower) {
+                    files.push(path.to_path_buf());
                 }
             }
         }
     }
+    files.sort();
     files
 }
 
@@ -75,9 +75,161 @@ fn get_millisecond_stamp() -> String {
     }
 }
 
+fn collect_script_sources(script_path: &Path) -> Result<Vec<PathBuf>, String> {
+    if script_path.is_file() {
+        return Ok(vec![script_path.to_path_buf()]);
+    }
+
+    if !script_path.is_dir() {
+        return Err(format!("Script path does not exist: {}", script_path.display()));
+    }
+
+    let mut files = list_files_with_extensions(script_path, &["txt"]);
+    files.sort();
+
+    if files.is_empty() {
+        return Err(format!("No .txt script files found in {}", script_path.display()));
+    }
+
+    Ok(files)
+}
+
+fn render_scripts_from_file(
+    script_path: &Path,
+    video_root: &Path,
+    music_root: &Path,
+    output_root: &Path,
+    overlay_root: &Path,
+    default_duration: f32,
+    requested_workers: usize,
+    blur_strength: parser::BlurStrength,
+) -> Result<(usize, usize), String> {
+    let scripts = parser::parse_scripts(script_path)
+        .map_err(|e| format!("Failed to parse script file {}: {}", script_path.display(), e))?;
+    println!("Loaded {} script(s) from {}", scripts.len(), script_path.display());
+
+    if scripts.is_empty() {
+        return Ok((0, 0));
+    }
+
+    let video_extensions = ["mp4", "mov", "mkv", "webm"];
+    let audio_extensions = ["mp3", "wav", "m4a", "aac"];
+
+    let mut videos = list_files_with_extensions(video_root, &video_extensions);
+    let mut music_files = list_files_with_extensions(music_root, &audio_extensions);
+
+    if videos.is_empty() {
+        println!("No background videos found; rendering on solid black background.");
+    } else {
+        println!("Found {} background video(s)", videos.len());
+        let mut rng = thread_rng();
+        videos.shuffle(&mut rng);
+    }
+
+    if music_files.is_empty() {
+        println!("No music tracks found; rendering silent videos.");
+    } else {
+        println!("Found {} music track(s)", music_files.len());
+        let mut rng = thread_rng();
+        music_files.shuffle(&mut rng);
+    }
+
+    println!("Blur mode: {}", blur_strength.as_str());
+    println!("Loading system font library...");
+    let font = overlay::load_system_font();
+
+    let workers = requested_workers.max(1).min(scripts.len());
+    println!("Spinning up worker pool ({} parallel workers)...", workers);
+
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(workers)
+        .build()
+        .map_err(|e| format!("Failed to initialize thread pool: {}", e))?;
+
+    let start_time = std::time::Instant::now();
+
+    let outputs: Vec<Result<PathBuf, String>> = pool.install(|| {
+        scripts
+            .par_iter()
+            .enumerate()
+            .map(|(index, script)| {
+                let stamp = get_millisecond_stamp();
+                let duration = script.duration.unwrap_or(default_duration).max(1.0);
+
+                println!(
+                    "[Worker] Rendering script {}/{} from {}: \"{}\"",
+                    index + 1,
+                    scripts.len(),
+                    script_path.display(),
+                    script.title
+                );
+
+                let mut overlay_paths = Vec::new();
+                match overlay::make_overlay(script, 0, overlay_root, &stamp, &font) {
+                    Ok(path) => overlay_paths.push(path),
+                    Err(e) => return Err(format!("Failed to make title overlay: {}", e)),
+                }
+
+                for point_index in 0..script.points.len() {
+                    match overlay::make_overlay(script, point_index + 1, overlay_root, &stamp, &font) {
+                        Ok(path) => overlay_paths.push(path),
+                        Err(e) => return Err(format!("Failed to make point overlay {}: {}", point_index + 1, e)),
+                    }
+                }
+
+                if !script.cta.is_empty() {
+                    match overlay::make_overlay(script, script.points.len() + 1, overlay_root, &stamp, &font) {
+                        Ok(path) => overlay_paths.push(path),
+                        Err(e) => return Err(format!("Failed to make CTA overlay: {}", e)),
+                    }
+                }
+
+                match ffmpeg::render_video(
+                    script,
+                    index,
+                    &videos,
+                    &music_files,
+                    output_root,
+                    &overlay_paths,
+                    duration,
+                    blur_strength,
+                    &stamp,
+                    None,
+                ) {
+                    Ok(out_path) => Ok(out_path),
+                    Err(e) => Err(format!("FFmpeg composition failed: {}", e)),
+                }
+            })
+            .collect()
+    });
+
+    let elapsed = start_time.elapsed();
+    println!("--------------------------------------------------");
+    println!("RENDERING DONE");
+    println!("--------------------------------------------------");
+    println!("Total elapsed time: {:.2?}", elapsed);
+
+    let mut success_count = 0;
+    for (i, res) in outputs.iter().enumerate() {
+        match res {
+            Ok(path) => {
+                success_count += 1;
+                println!("  Reel {}: {:?}", i + 1, path.file_name().unwrap());
+            }
+            Err(e) => {
+                eprintln!("  Reel {}: Error -> {}", i + 1, e);
+            }
+        }
+    }
+    println!("Rendered {}/{} videos successfully.", success_count, scripts.len());
+
+    Ok((success_count, scripts.len()))
+}
+
 // --------------------------------------------------
 //               CLI MODE EXECUTION
 // --------------------------------------------------
+#[allow(dead_code)]
 fn run_cli(args: Args) {
     let script_path = args.script.expect("Script path is required in CLI mode");
     let blur_strength = parser::BlurStrength::from_str(&args.blur);
@@ -136,8 +288,7 @@ fn run_cli(args: Args) {
             .enumerate()
             .map(|(index, script)| {
                 let stamp = get_millisecond_stamp();
-                let duration = script.duration.unwrap_or(args.duration);
-                let duration = 13.0f32.min(12.0f32.max(duration));
+                let duration = script.duration.unwrap_or(args.duration).max(1.0);
 
                 println!("[Worker] Rendering script {}/{}: \"{}\"", index + 1, scripts.len(), script.title);
 
@@ -421,8 +572,7 @@ impl ReelForgeApp {
                         }
 
                         let stamp = get_millisecond_stamp();
-                        let d = script.duration.unwrap_or(duration);
-                        let d = 13.0f32.min(12.0f32.max(d));
+                        let d = script.duration.unwrap_or(duration).max(1.0);
 
                         let _ = tx.send(format!("[Worker] Building text frames for Reel {}...", index + 1));
 
@@ -689,9 +839,95 @@ fn main() {
 
     let args = Args::parse();
 
-    if args.script.is_some() {
+    if let Some(script_path) = args.script.as_ref() {
         // Run as CLI tool
-        run_cli(args);
+        let blur_strength = parser::BlurStrength::from_str(&args.blur);
+        println!("--------------------------------------------------");
+        println!("        RUST REEL FORGE - INITIALIZING         ");
+        println!("--------------------------------------------------");
+
+        let script_sources = match collect_script_sources(script_path) {
+            Ok(files) => files,
+            Err(e) => {
+                eprintln!("Failed to load script source: {}", e);
+                std::process::exit(1);
+            }
+        };
+
+        let batch_mode = script_path.is_dir();
+        let script_file_count = script_sources.len();
+        let mut grand_total_success = 0usize;
+        let mut grand_total_scripts = 0usize;
+
+        for (file_index, script_file) in script_sources.iter().enumerate() {
+            let stem = script_file
+                .file_stem()
+                .and_then(|name| name.to_str())
+                .unwrap_or("scripts");
+            let output_root = if batch_mode {
+                args.output.join(parser::slugify(stem))
+            } else {
+                args.output.clone()
+            };
+            let overlay_root = if batch_mode {
+                args.overlays.join(parser::slugify(stem))
+            } else {
+                args.overlays.clone()
+            };
+
+            if batch_mode {
+                println!(
+                    "=================================================="
+                );
+                println!(
+                    "Batch file {}/{}",
+                    file_index + 1,
+                    script_file_count
+                );
+            }
+            println!("Script source: {}", script_file.display());
+            println!("Video output: {}", output_root.display());
+
+            match render_scripts_from_file(
+                script_file,
+                &args.videos,
+                &args.music,
+                &output_root,
+                &overlay_root,
+                args.duration,
+                args.workers,
+                blur_strength,
+            ) {
+                Ok((success_count, total_count)) => {
+                    grand_total_success += success_count;
+                    grand_total_scripts += total_count;
+                    if batch_mode {
+                        println!(
+                            "Completed batch file {}/{} -> {} ({} / {} reels succeeded in this file)",
+                            file_index + 1,
+                            script_file_count,
+                            script_file.display(),
+                            success_count,
+                            total_count
+                        );
+                    }
+                }
+                Err(e) => {
+                    eprintln!("{}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        if batch_mode {
+            println!("==================================================");
+            println!(
+                "Batch finished: rendered {}/{} reels across {} script file(s).",
+                grand_total_success,
+                grand_total_scripts,
+                script_file_count
+            );
+        }
     } else {
         // Run as pure-Rust native GUI!
         println!("🚀 Launching native Rust GUI...");

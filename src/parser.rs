@@ -1,15 +1,20 @@
 use regex::Regex;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct Script {
     pub title: String,
     pub points: Vec<String>,
+    pub point_pause_counts_before: Vec<u32>,
+    pub cta_pause_count_before: u32,
     pub cta: String,
     pub code: String,
     pub duration: Option<f32>,
     pub layout: String,
+    pub all_at_once: bool,
+    pub video: Option<PathBuf>,
+    pub audio: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,15 +74,30 @@ pub fn normalize_layout(value: &str) -> String {
     match normalized {
         "question_answer" | "question" | "answer" => "question_answer".to_string(),
         "advice" | "list" | "list_style" => "list_style".to_string(),
-        "reels" | "center" | "center_stack" => "center_stack".to_string(),
+        "reels" | "center" | "center_stack" | "single_stack" | "feed_layout" => "center_stack".to_string(),
         "left" | "left_stack" => "left_stack".to_string(),
         "right" | "right_stack" => "right_stack".to_string(),
-        "top_bottom" => "top_bottom".to_string(),
+        "top_bottom" | "timeline_layout" => "top_bottom".to_string(),
         "one_word" | "one_word_hook" => "one_word_hook".to_string(),
         "quote" | "quote_style" => "quote_style".to_string(),
-        "story" | "story_block" => "story_block".to_string(),
+        "story" | "story_block" | "accordion_layout" => "story_block".to_string(),
+        "full_text" | "full_list" | "all_at_once" | "static_text" => "story_block".to_string(),
         "progress" | "progress_reveal" => "progress_reveal".to_string(),
-        "card" | "center_card" => "center_card".to_string(),
+        "card" | "center_card" | "card_carousel" | "centered_spotlight" => "center_card".to_string(),
+        "two_column_split" => "two_column_split".to_string(),
+        "grid_layout" => "grid_layout".to_string(),
+        "masonry_layout" => "masonry_layout".to_string(),
+        "hero_list" => "hero_list".to_string(),
+        "alternating_rows" => "alternating_rows".to_string(),
+        "sidebar_layout" => "sidebar_layout".to_string(),
+        "collage_layout" => "collage_layout".to_string(),
+        "auto_fit_tiles" => "auto_fit_tiles".to_string(),
+        "tabbed_layout" => "tabbed_layout".to_string(),
+        "magazine_layout" => "magazine_layout".to_string(),
+        "template_rotation_layout" => "template_rotation_layout".to_string(),
+        "priority_based_layout" => "priority_based_layout".to_string(),
+        "adaptive_smart_layout" => "adaptive_smart_layout".to_string(),
+        "fallback_universal_layout" => "fallback_universal_layout".to_string(),
         _ => "center_stack".to_string(),
     }
 }
@@ -98,16 +118,34 @@ fn parse_script_block(block: &str, index: usize) -> Script {
     let mut title = String::new();
     let mut cta = String::new();
     let mut points = Vec::new();
+    let mut point_pause_counts_before = Vec::new();
+    let mut pending_pause_count = 0u32;
     let mut code = String::new();
     let mut duration = None;
     let mut layout = "center_stack".to_string();
+    let mut all_at_once = false;
+    let mut video = None;
+    let mut audio = None;
 
     let line_num_re = Regex::new(r"(?i)^line_?\d+$").unwrap();
     let metadata_key_re = Regex::new(r"(?i)^[a-z][a-z0-9_ -]*$").unwrap();
     let list_prefix_re = Regex::new(r"^\s*(?:[-*]|\d+[.)])\s*").unwrap();
 
+    let mut push_point = |raw_value: &str| {
+        let cleaned = list_prefix_re.replace(raw_value, "").trim().to_string();
+        if cleaned.eq_ignore_ascii_case("(pause)") || cleaned.eq_ignore_ascii_case("[pause]") {
+            pending_pause_count += 1;
+            return;
+        }
+        if !cleaned.is_empty() {
+            points.push(cleaned);
+            point_pause_counts_before.push(pending_pause_count);
+            pending_pause_count = 0;
+        }
+    };
+
     for raw_line in block.lines() {
-        let line = raw_line.trim();
+        let line = raw_line.trim().trim_start_matches('\u{feff}').trim();
         if line.is_empty() {
             continue;
         }
@@ -126,6 +164,16 @@ fn parse_script_block(block: &str, index: usize) -> Script {
                 "code" => {
                     code = value.to_string();
                 }
+                "video" | "vid" => {
+                    if !value.is_empty() {
+                        video = Some(PathBuf::from(value));
+                    }
+                }
+                "audio" => {
+                    if !value.is_empty() {
+                        audio = Some(PathBuf::from(value));
+                    }
+                }
                 "duration" => {
                     let num_re = Regex::new(r"\d+(?:\.\d+)?").unwrap();
                     if let Some(mat) = num_re.find(value) {
@@ -136,17 +184,31 @@ fn parse_script_block(block: &str, index: usize) -> Script {
                 }
                 "format" | "layout" => {
                     layout = normalize_layout(value);
+                    let val_lower = value.to_lowercase();
+                    if val_lower.contains("full")
+                        || val_lower.contains("static")
+                        || val_lower.contains("all at once")
+                    {
+                        all_at_once = true;
+                    }
                 }
                 "text_animation" => {
                     let val_lower = value.to_lowercase();
-                    if val_lower.contains("question") && val_lower.contains("answer") {
+                    if val_lower.contains("static")
+                        || val_lower.contains("all at once")
+                        || val_lower.contains("no pop")
+                        || val_lower.contains("no popping")
+                        || val_lower.contains("none")
+                    {
+                        all_at_once = true;
+                    } else if val_lower.contains("question") && val_lower.contains("answer") {
                         layout = "question_answer".to_string();
                     } else if val_lower.contains("fade") || val_lower.contains("line") {
                         layout = "list_style".to_string();
                     }
                 }
                 k if line_num_re.is_match(k) => {
-                    points.push(value.to_string());
+                    push_point(value);
                 }
                 "style" | "niche" | "sub_style" => {
                     // Skip
@@ -154,19 +216,18 @@ fn parse_script_block(block: &str, index: usize) -> Script {
                 _ => {
                     // Ignore unknown metadata-style keys so parser labels never render.
                     if !metadata_key_re.is_match(key.as_str()) {
-                        let cleaned = list_prefix_re.replace(line, "").into_owned();
-                        points.push(cleaned);
+                        push_point(line);
                     }
                 }
             }
         } else {
-            let cleaned = list_prefix_re.replace(line, "").into_owned();
-            points.push(cleaned);
+            push_point(line);
         }
     }
 
     if title.is_empty() && !points.is_empty() {
         title = points.remove(0);
+        point_pause_counts_before.remove(0);
     }
     if title.is_empty() {
         title = format!("Video {}", index + 1);
@@ -175,9 +236,14 @@ fn parse_script_block(block: &str, index: usize) -> Script {
     Script {
         title,
         points,
+        point_pause_counts_before,
+        cta_pause_count_before: pending_pause_count,
         cta,
         code,
         duration,
         layout,
+        all_at_once,
+        video,
+        audio,
     }
 }
