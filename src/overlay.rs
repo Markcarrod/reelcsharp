@@ -258,14 +258,22 @@ fn text_block_height(font: &FontArc, scale: PxScale, lines: &[String]) -> f32 {
     }
 }
 
-fn strip_leading_list_number(value: &str) -> Option<String> {
-    let digit_end = value
+fn parse_leading_list_number(value: &str) -> Option<(usize, String)> {
+    let trimmed = value.trim_start();
+    let trimmed = if let Some(rest) = trimmed.strip_prefix('-') {
+        rest.trim_start()
+    } else {
+        trimmed
+    };
+
+    let digit_end = trimmed
         .char_indices()
         .take_while(|(_, ch)| ch.is_ascii_digit())
         .map(|(idx, ch)| idx + ch.len_utf8())
         .last()?;
 
-    let rest = &value[digit_end..];
+    let number = trimmed[..digit_end].parse::<usize>().ok()?;
+    let rest = &trimmed[digit_end..];
     if rest.is_empty() {
         return None;
     }
@@ -284,7 +292,7 @@ fn strip_leading_list_number(value: &str) -> Option<String> {
     if rest.is_empty() {
         None
     } else {
-        Some(rest.to_string())
+        Some((number, rest.to_string()))
     }
 }
 
@@ -297,24 +305,27 @@ fn script_prefers_numbered_list(script: &Script) -> bool {
             .points
             .iter()
             .map(|point| normalize_render_text(point))
-            .any(|point| strip_leading_list_number(&point).is_some())
+            .any(|point| parse_leading_list_number(&point).is_some())
 }
 
 fn point_text(script: &Script, spec: &LayoutSpec, layout: &str, point_index: usize) -> String {
-    let mut point = normalize_render_text(&script.points[point_index]);
+    let point = normalize_render_text(&script.points[point_index]);
 
     if layout == "progress_reveal" {
         return format!(
             "{}/{}  {}",
             point_index + 1,
             script.points.len().max(1),
-            strip_leading_list_number(&point).unwrap_or(point)
+            parse_leading_list_number(&point)
+                .map(|(_, rest)| rest)
+                .unwrap_or(point)
         );
     }
 
     if spec.marker == "- " && script_prefers_numbered_list(script) {
-        point = strip_leading_list_number(&point).unwrap_or(point);
-        return format!("{}. {}", point_index + 1, point);
+        let (number, rest) =
+            parse_leading_list_number(&point).unwrap_or((point_index + 1, point));
+        return format!("{}. {}", number, rest);
     }
 
     normalize_render_text(&format!("{}{}", spec.marker, point))
