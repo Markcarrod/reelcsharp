@@ -26,6 +26,14 @@ DEFAULT_MUSIC = ROOT.parent / "python_reel_forge" / "input" / "music"
 DEFAULT_OUTPUT = ROOT / "output" / "videos"
 DEFAULT_OVERLAYS = ROOT / "output" / "overlays"
 
+
+def natural_sort_key(path: Path) -> list[object]:
+    return [
+        int(part) if part.isdigit() else part.lower()
+        for part in re.split(r"(\d+)", str(path))
+        if part
+    ]
+
 class RustReelForgeDesktop(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
@@ -203,7 +211,7 @@ class RustReelForgeDesktop(tk.Tk):
         if not folder:
             return
         folder_path = Path(folder).resolve()
-        script_files = sorted(folder_path.rglob("*.txt"))
+        script_files = sorted(folder_path.rglob("*.txt"), key=natural_sort_key)
         self.script_source.set(str(folder_path))
         self.script_text.delete("1.0", "end")
         if script_files:

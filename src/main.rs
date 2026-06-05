@@ -2,6 +2,9 @@ use clap::Parser;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 use rayon::prelude::*;
+use regex::Regex;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver};
@@ -14,6 +17,8 @@ use walkdir::WalkDir;
 mod parser;
 mod overlay;
 mod ffmpeg;
+
+const COMPLETION_LEDGER_PATH: &str = r"C:\Users\Administrator\OneDrive\Videos\fbfINAL\ALL.TXT";
 
 #[derive(Debug, Clone, Copy)]
 enum WorkerMode {
@@ -160,13 +165,85 @@ fn collect_script_sources(script_path: &Path) -> Result<Vec<PathBuf>, String> {
     }
 
     let mut files = list_files_with_extensions(script_path, &["txt"]);
-    files.sort();
+    files.sort_by(|left, right| natural_path_cmp(left, right));
 
     if files.is_empty() {
         return Err(format!("No .txt script files found in {}", script_path.display()));
     }
 
     Ok(files)
+}
+
+fn natural_path_cmp(left: &Path, right: &Path) -> std::cmp::Ordering {
+    let left_parts: Vec<String> = left
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().to_string())
+        .collect();
+    let right_parts: Vec<String> = right
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().to_string())
+        .collect();
+
+    for (left_part, right_part) in left_parts.iter().zip(right_parts.iter()) {
+        let part_cmp = natural_str_cmp(left_part, right_part);
+        if part_cmp != std::cmp::Ordering::Equal {
+            return part_cmp;
+        }
+    }
+
+    left_parts.len().cmp(&right_parts.len())
+}
+
+fn natural_str_cmp(left: &str, right: &str) -> std::cmp::Ordering {
+    let splitter = Regex::new(r"\d+|\D+").unwrap();
+    let left_chunks: Vec<&str> = splitter.find_iter(left).map(|m| m.as_str()).collect();
+    let right_chunks: Vec<&str> = splitter.find_iter(right).map(|m| m.as_str()).collect();
+
+    for (left_chunk, right_chunk) in left_chunks.iter().zip(right_chunks.iter()) {
+        let chunk_cmp = match (left_chunk.parse::<u64>(), right_chunk.parse::<u64>()) {
+            (Ok(left_num), Ok(right_num)) => left_num.cmp(&right_num),
+            _ => left_chunk.to_lowercase().cmp(&right_chunk.to_lowercase()),
+        };
+        if chunk_cmp != std::cmp::Ordering::Equal {
+            return chunk_cmp;
+        }
+    }
+
+    left_chunks.len().cmp(&right_chunks.len())
+}
+
+fn append_completion_ledger(script_file: &Path) -> Result<(), String> {
+    let stem = script_file
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("scripts");
+    let week_name = script_file
+        .parent()
+        .and_then(|parent| parent.file_name())
+        .and_then(|name| name.to_str())
+        .unwrap_or("root");
+
+    let ledger_path = Path::new(COMPLETION_LEDGER_PATH);
+    if let Some(parent) = ledger_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            format!(
+                "Failed to create completion ledger folder {}: {}",
+                parent.display(),
+                e
+            )
+        })?;
+    }
+
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(ledger_path)
+        .map_err(|e| format!("Failed to open completion ledger {}: {}", ledger_path.display(), e))?;
+
+    writeln!(file, "{}:{}", stem, week_name)
+        .map_err(|e| format!("Failed to append completion ledger {}: {}", ledger_path.display(), e))?;
+
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -886,6 +963,16 @@ impl ReelForgeApp {
                         Ok((success_count, total_count)) => {
                             grand_total_success += success_count;
                             grand_total_scripts += total_count;
+                            if success_count == total_count && total_count > 0 {
+                                match append_completion_ledger(script_file) {
+                                    Ok(()) => log(&format!(
+                                        "Completion ledger updated: {}:{}",
+                                        script_file.file_stem().and_then(|name| name.to_str()).unwrap_or("scripts"),
+                                        script_file.parent().and_then(|parent| parent.file_name()).and_then(|name| name.to_str()).unwrap_or("root")
+                                    )),
+                                    Err(e) => log(&format!("⚠️ {}", e)),
+                                }
+                            }
                             if batch_mode {
                                 log(&format!(
                                     "Completed batch file {}/{} -> {} ({} / {} reels succeeded in this file)",
@@ -1329,6 +1416,17 @@ fn main() {
                 Ok((success_count, total_count)) => {
                     grand_total_success += success_count;
                     grand_total_scripts += total_count;
+                    if success_count == total_count && total_count > 0 {
+                        if let Err(e) = append_completion_ledger(script_file) {
+                            eprintln!("{}", e);
+                        } else {
+                            println!(
+                                "Completion ledger updated: {}:{}",
+                                script_file.file_stem().and_then(|name| name.to_str()).unwrap_or("scripts"),
+                                script_file.parent().and_then(|parent| parent.file_name()).and_then(|name| name.to_str()).unwrap_or("root")
+                            );
+                        }
+                    }
                     if batch_mode {
                         println!(
                             "Completed batch file {}/{} -> {} ({} / {} reels succeeded in this file)",
