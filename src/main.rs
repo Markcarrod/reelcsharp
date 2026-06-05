@@ -94,6 +94,7 @@ fn collect_script_sources(script_path: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(files)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_scripts_from_file(
     script_path: &Path,
     video_root: &Path,

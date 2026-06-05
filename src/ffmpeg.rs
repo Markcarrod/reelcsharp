@@ -58,6 +58,7 @@ fn probe_media_duration(path: &Path) -> Option<f32> {
     stdout.trim().parse::<f32>().ok().filter(|value| *value > 0.0)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn render_video(
     script: &Script,
     index: usize,
@@ -149,7 +150,7 @@ pub fn render_video(
         bg_chain.push_str(",drawbox=t=fill:color=black@0.42[bg]");
         filters.push(bg_chain);
     } else {
-        filters.push(format!("[0:v]drawbox=t=fill:color=black@0.42[bg]"));
+        filters.push("[0:v]drawbox=t=fill:color=black@0.42[bg]".to_string());
     }
 
     // 2. Apply fade and overlay for each PNG layer
@@ -231,8 +232,7 @@ pub fn render_video(
     }
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
+        return Err(std::io::Error::other(
             format!("FFmpeg failed: {}", stderr),
         ));
     }

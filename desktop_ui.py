@@ -35,9 +35,12 @@ class RustReelForgeDesktop(tk.Tk):
         self.music_folder = tk.StringVar(value=str(DEFAULT_MUSIC.resolve()))
         self.output_folder = tk.StringVar(value=str(DEFAULT_OUTPUT.resolve()))
         self.overlay_folder = tk.StringVar(value=str(DEFAULT_OVERLAYS.resolve()))
+        self.script_source = tk.StringVar(value="")
         self.duration = tk.StringVar(value="12.5")
         self.workers = tk.StringVar(value="4")
         self.status = tk.StringVar(value="Ready")
+        self.batch_progress = tk.IntVar(value=0)
+        self.batch_progress_text = tk.StringVar(value="")
         self.preview_image: ImageTk.PhotoImage | None = None
         self.process: subprocess.Popen | None = None
 
@@ -80,15 +83,20 @@ class RustReelForgeDesktop(tk.Tk):
         ttk.Label(options, text="Parallel Threads").grid(row=0, column=2, sticky="w")
         ttk.Entry(options, textvariable=self.workers, width=8).grid(row=0, column=3, sticky="w", padx=(8, 0))
 
-        # Script TextBox
+        # Script source + editor
         script_frame = ttk.LabelFrame(left, text="Reel Script Editor", padding=10)
         script_frame.grid(row=2, column=0, sticky="nsew", pady=(12, 0))
         script_frame.columnconfigure(0, weight=1)
-        script_frame.rowconfigure(0, weight=1)
+        script_frame.rowconfigure(1, weight=1)
+        source_row = ttk.Frame(script_frame)
+        source_row.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        source_row.columnconfigure(1, weight=1)
+        ttk.Label(source_row, text="Script Source").grid(row=0, column=0, sticky="w")
+        ttk.Entry(source_row, textvariable=self.script_source).grid(row=0, column=1, sticky="ew", padx=8)
         self.script_text = tk.Text(script_frame, wrap="word", undo=True, height=18)
-        self.script_text.grid(row=0, column=0, sticky="nsew")
+        self.script_text.grid(row=1, column=0, sticky="nsew")
         scrollbar = ttk.Scrollbar(script_frame, command=self.script_text.yview)
-        scrollbar.grid(row=0, column=1, sticky="ns")
+        scrollbar.grid(row=1, column=1, sticky="ns")
         self.script_text.configure(yscrollcommand=scrollbar.set)
         
         # Load standard example into text box initially
@@ -102,10 +110,24 @@ class RustReelForgeDesktop(tk.Tk):
         buttons = ttk.Frame(left)
         buttons.grid(row=3, column=0, sticky="ew", pady=(12, 0))
         ttk.Button(buttons, text="Load Script", command=self.load_script).pack(side="left")
+        ttk.Button(buttons, text="Load Folder", command=self.load_script_folder).pack(side="left", padx=(8, 0))
+        ttk.Button(buttons, text="Use Editor", command=self.use_editor_script).pack(side="left", padx=(8, 0))
         ttk.Button(buttons, text="Save Settings", command=self.save_input).pack(side="left", padx=(8, 0))
         ttk.Button(buttons, text="Start Rust Render", command=self.start_render, style="Accent.TButton").pack(side="left", padx=(8, 0))
         ttk.Button(buttons, text="Cancel Render", command=self.cancel_render).pack(side="left", padx=(8, 0))
         ttk.Label(buttons, textvariable=self.status, font=("Helvetica", 10, "bold")).pack(side="right")
+
+        progress_row = ttk.Frame(left)
+        progress_row.grid(row=4, column=0, sticky="ew", pady=(8, 0))
+        progress_row.columnconfigure(0, weight=1)
+        self.progress_bar = ttk.Progressbar(
+            progress_row,
+            variable=self.batch_progress,
+            mode="determinate",
+            maximum=1,
+        )
+        self.progress_bar.grid(row=0, column=0, sticky="ew")
+        ttk.Label(progress_row, textvariable=self.batch_progress_text, width=14).grid(row=0, column=1, padx=(8, 0))
 
         # Preview area
         preview_frame = ttk.LabelFrame(right, text="Visual Layout Preview", padding=10)
@@ -145,8 +167,34 @@ class RustReelForgeDesktop(tk.Tk):
         )
         if not file_path:
             return
+        self.script_source.set(str(Path(file_path).resolve()))
         self.script_text.delete("1.0", "end")
         self.script_text.insert("1.0", Path(file_path).read_text(encoding="utf-8"))
+        self.save_state()
+
+    def load_script_folder(self) -> None:
+        init_dir = str(ROOT.parent / "python_reel_forge" / "input" / "scripts")
+        folder = filedialog.askdirectory(initialdir=init_dir)
+        if not folder:
+            return
+        folder_path = Path(folder).resolve()
+        script_files = sorted(folder_path.rglob("*.txt"))
+        self.script_source.set(str(folder_path))
+        self.script_text.delete("1.0", "end")
+        if script_files:
+            preview = "\n".join(str(path) for path in script_files[:20])
+            if len(script_files) > 20:
+                preview += f"\n... and {len(script_files) - 20} more file(s)"
+            self.script_text.insert(
+                "1.0",
+                f"Folder mode enabled.\nAll .txt files in this folder will be rendered.\n\n{preview}",
+            )
+        else:
+            self.script_text.insert("1.0", "Folder mode enabled, but no .txt files were found yet.")
+        self.save_state()
+
+    def use_editor_script(self) -> None:
+        self.script_source.set("")
         self.save_state()
 
     def current_state(self) -> dict[str, str]:
@@ -155,6 +203,7 @@ class RustReelForgeDesktop(tk.Tk):
             "music_folder": self.music_folder.get(),
             "output_folder": self.output_folder.get(),
             "overlay_folder": self.overlay_folder.get(),
+            "script_source": self.script_source.get(),
             "duration": self.duration.get(),
             "workers": self.workers.get(),
             "script_text": self.script_text.get("1.0", "end").rstrip(),
@@ -171,6 +220,7 @@ class RustReelForgeDesktop(tk.Tk):
         self.music_folder.set(state.get("music_folder", self.music_folder.get()))
         self.output_folder.set(state.get("output_folder", self.output_folder.get()))
         self.overlay_folder.set(state.get("overlay_folder", self.overlay_folder.get()))
+        self.script_source.set(state.get("script_source", self.script_source.get()))
         self.duration.set(state.get("duration", self.duration.get()))
         self.workers.set(state.get("workers", self.workers.get()))
         saved_script = state.get("script_text")
@@ -198,6 +248,16 @@ class RustReelForgeDesktop(tk.Tk):
         self.log_text.see("end")
         self.log_text.configure(state="disabled")
         self.update_idletasks()
+
+    def handle_backend_line(self, line: str) -> None:
+        self.log(line)
+        match = re.search(r"Completed batch file\s+(\d+)/(\d+)", line)
+        if match:
+            current = int(match.group(1))
+            total = max(1, int(match.group(2)))
+            self.progress_bar.configure(maximum=total)
+            self.batch_progress.set(current)
+            self.batch_progress_text.set(f"{current}/{total}")
 
     def cancel_render(self) -> None:
         if self.process:
@@ -235,18 +295,27 @@ class RustReelForgeDesktop(tk.Tk):
     def start_render(self) -> None:
         self.cancel_render()
         self.save_state()
-        
-        script_text = self.script_text.get("1.0", "end").strip()
-        if not script_text:
-            messagebox.showerror("Error", "Please enter a script layout first.")
-            return
 
-        # Write to a temp script file
-        temp_script_path = ROOT / "output" / "temp_script.txt"
-        temp_script_path.parent.mkdir(parents=True, exist_ok=True)
-        temp_script_path.write_text(script_text, encoding="utf-8")
+        script_source = self.script_source.get().strip()
+        if script_source:
+            temp_script_path = Path(script_source)
+            if not temp_script_path.exists():
+                messagebox.showerror("Error", "Selected script file or folder does not exist.")
+                return
+        else:
+            script_text = self.script_text.get("1.0", "end").strip()
+            if not script_text:
+                messagebox.showerror("Error", "Please enter a script layout first.")
+                return
+
+            # Write to a temp script file
+            temp_script_path = ROOT / "output" / "temp_script.txt"
+            temp_script_path.parent.mkdir(parents=True, exist_ok=True)
+            temp_script_path.write_text(script_text, encoding="utf-8")
 
         self.status.set("Rendering...")
+        self.batch_progress.set(0)
+        self.batch_progress_text.set("")
         self.log("\n==================================================")
         self.log("🎨 LAUNCHING RUST REEL FORGE BACKEND")
         self.log("==================================================")
@@ -280,7 +349,7 @@ class RustReelForgeDesktop(tk.Tk):
                 if not line and self.process.poll() is not None:
                     break
                 if line:
-                    self.after(0, self.log, line.rstrip())
+                    self.after(0, self.handle_backend_line, line.rstrip())
 
             rc = self.process.poll()
             if rc == 0:
@@ -343,3 +412,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

@@ -1,4 +1,4 @@
-use ab_glyph::{Font, FontArc, Glyph, PxScale, ScaleFont};
+﻿use ab_glyph::{Font, FontArc, Glyph, PxScale, ScaleFont};
 use encoding_rs::WINDOWS_1252;
 use image::{Rgba, RgbaImage};
 use std::fs;
@@ -20,7 +20,6 @@ pub struct LayoutParam {
 pub struct LayoutSpec {
     pub title: LayoutParam,
     pub point: LayoutParam, // will be offset by point_index * offset_y
-    pub point_offset_y: f32,
     pub cta: LayoutParam,
     pub marker: String,
 }
@@ -29,15 +28,15 @@ pub fn layout_display_name(layout: &str) -> &'static str {
     match normalize_layout(layout).as_str() {
         "question_answer" => "Question Answer",
         "list_style" => "List Style",
-        "center_stack" => "Single Stack",
+        "center_stack" => "Center Stack",
         "left_stack" => "Left Stack",
         "right_stack" => "Right Stack",
-        "top_bottom" => "Timeline Layout",
+        "top_bottom" => "Top Bottom",
         "one_word_hook" => "One Word Hook",
         "quote_style" => "Quote Style",
-        "story_block" => "Accordion Layout",
+        "story_block" => "Story Block",
         "progress_reveal" => "Progress Reveal",
-        "center_card" => "Centered Spotlight",
+        "center_card" => "Center Card",
         "two_column_split" => "Two Column Split",
         "grid_layout" => "Grid Layout",
         "masonry_layout" => "Masonry Layout",
@@ -61,168 +60,144 @@ pub fn get_layout_spec(layout: &str) -> LayoutSpec {
         "two_column_split" => LayoutSpec {
             title: LayoutParam { x: 80.0, y: 320.0, width: 420.0, align: "left".to_string(), font_size: 72.0 },
             point: LayoutParam { x: 560.0, y: 500.0, width: 360.0, align: "left".to_string(), font_size: 44.0 },
-            point_offset_y: 185.0,
             cta: LayoutParam { x: 560.0, y: 1470.0, width: 360.0, align: "left".to_string(), font_size: 30.0 },
             marker: "".to_string(),
         },
         "grid_layout" => LayoutSpec {
             title: LayoutParam { x: 100.0, y: 250.0, width: 880.0, align: "center".to_string(), font_size: 72.0 },
             point: LayoutParam { x: 110.0, y: 640.0, width: 380.0, align: "left".to_string(), font_size: 42.0 },
-            point_offset_y: 0.0,
             cta: LayoutParam { x: 100.0, y: 1520.0, width: 880.0, align: "center".to_string(), font_size: 30.0 },
             marker: "".to_string(),
         },
         "masonry_layout" => LayoutSpec {
             title: LayoutParam { x: 90.0, y: 260.0, width: 900.0, align: "left".to_string(), font_size: 70.0 },
             point: LayoutParam { x: 95.0, y: 630.0, width: 430.0, align: "left".to_string(), font_size: 40.0 },
-            point_offset_y: 0.0,
             cta: LayoutParam { x: 100.0, y: 1510.0, width: 880.0, align: "left".to_string(), font_size: 30.0 },
             marker: "- ".to_string(),
         },
         "hero_list" => LayoutSpec {
             title: LayoutParam { x: 80.0, y: 300.0, width: 920.0, align: "center".to_string(), font_size: 82.0 },
             point: LayoutParam { x: 120.0, y: 860.0, width: 840.0, align: "left".to_string(), font_size: 46.0 },
-            point_offset_y: 108.0,
             cta: LayoutParam { x: 110.0, y: 1515.0, width: 860.0, align: "center".to_string(), font_size: 30.0 },
             marker: "- ".to_string(),
         },
         "alternating_rows" => LayoutSpec {
             title: LayoutParam { x: 100.0, y: 260.0, width: 880.0, align: "center".to_string(), font_size: 72.0 },
             point: LayoutParam { x: 110.0, y: 680.0, width: 860.0, align: "left".to_string(), font_size: 44.0 },
-            point_offset_y: 122.0,
             cta: LayoutParam { x: 110.0, y: 1510.0, width: 860.0, align: "center".to_string(), font_size: 30.0 },
             marker: "".to_string(),
         },
         "sidebar_layout" => LayoutSpec {
             title: LayoutParam { x: 90.0, y: 320.0, width: 640.0, align: "left".to_string(), font_size: 74.0 },
             point: LayoutParam { x: 120.0, y: 760.0, width: 610.0, align: "left".to_string(), font_size: 42.0 },
-            point_offset_y: 116.0,
             cta: LayoutParam { x: 120.0, y: 1490.0, width: 610.0, align: "left".to_string(), font_size: 30.0 },
             marker: "- ".to_string(),
         },
         "collage_layout" => LayoutSpec {
             title: LayoutParam { x: 90.0, y: 280.0, width: 900.0, align: "center".to_string(), font_size: 76.0 },
             point: LayoutParam { x: 120.0, y: 700.0, width: 360.0, align: "left".to_string(), font_size: 38.0 },
-            point_offset_y: 0.0,
             cta: LayoutParam { x: 110.0, y: 1510.0, width: 860.0, align: "center".to_string(), font_size: 30.0 },
             marker: "".to_string(),
         },
         "auto_fit_tiles" => LayoutSpec {
             title: LayoutParam { x: 90.0, y: 280.0, width: 900.0, align: "center".to_string(), font_size: 74.0 },
             point: LayoutParam { x: 110.0, y: 680.0, width: 380.0, align: "left".to_string(), font_size: 40.0 },
-            point_offset_y: 0.0,
             cta: LayoutParam { x: 100.0, y: 1510.0, width: 880.0, align: "center".to_string(), font_size: 30.0 },
             marker: "".to_string(),
         },
         "tabbed_layout" => LayoutSpec {
             title: LayoutParam { x: 90.0, y: 330.0, width: 900.0, align: "left".to_string(), font_size: 72.0 },
             point: LayoutParam { x: 120.0, y: 770.0, width: 840.0, align: "left".to_string(), font_size: 44.0 },
-            point_offset_y: 104.0,
             cta: LayoutParam { x: 110.0, y: 1495.0, width: 860.0, align: "left".to_string(), font_size: 30.0 },
             marker: "> ".to_string(),
         },
         "magazine_layout" => LayoutSpec {
             title: LayoutParam { x: 90.0, y: 250.0, width: 900.0, align: "left".to_string(), font_size: 80.0 },
             point: LayoutParam { x: 120.0, y: 760.0, width: 540.0, align: "left".to_string(), font_size: 42.0 },
-            point_offset_y: 128.0,
             cta: LayoutParam { x: 120.0, y: 1510.0, width: 840.0, align: "left".to_string(), font_size: 30.0 },
             marker: "".to_string(),
         },
         "template_rotation_layout" => LayoutSpec {
             title: LayoutParam { x: 90.0, y: 470.0, width: 900.0, align: "center".to_string(), font_size: 80.0 },
             point: LayoutParam { x: 150.0, y: 820.0, width: 780.0, align: "center".to_string(), font_size: 48.0 },
-            point_offset_y: 112.0,
             cta: LayoutParam { x: 110.0, y: 1515.0, width: 860.0, align: "center".to_string(), font_size: 30.0 },
             marker: "".to_string(),
         },
         "priority_based_layout" => LayoutSpec {
             title: LayoutParam { x: 80.0, y: 310.0, width: 920.0, align: "center".to_string(), font_size: 88.0 },
             point: LayoutParam { x: 120.0, y: 920.0, width: 840.0, align: "center".to_string(), font_size: 42.0 },
-            point_offset_y: 96.0,
             cta: LayoutParam { x: 100.0, y: 1510.0, width: 880.0, align: "center".to_string(), font_size: 30.0 },
             marker: "".to_string(),
         },
         "adaptive_smart_layout" => LayoutSpec {
             title: LayoutParam { x: 90.0, y: 360.0, width: 900.0, align: "center".to_string(), font_size: 76.0 },
             point: LayoutParam { x: 120.0, y: 760.0, width: 840.0, align: "center".to_string(), font_size: 46.0 },
-            point_offset_y: 112.0,
             cta: LayoutParam { x: 110.0, y: 1510.0, width: 860.0, align: "center".to_string(), font_size: 30.0 },
             marker: "".to_string(),
         },
         "fallback_universal_layout" => LayoutSpec {
             title: LayoutParam { x: 90.0, y: 520.0, width: 900.0, align: "center".to_string(), font_size: 82.0 },
             point: LayoutParam { x: 150.0, y: 820.0, width: 780.0, align: "center".to_string(), font_size: 48.0 },
-            point_offset_y: 108.0,
             cta: LayoutParam { x: 110.0, y: 1510.0, width: 860.0, align: "center".to_string(), font_size: 30.0 },
             marker: "".to_string(),
         },
         "question_answer" => LayoutSpec {
             title: LayoutParam { x: 105.0, y: 500.0, width: 870.0, align: "center".to_string(), font_size: 76.0 },
             point: LayoutParam { x: 145.0, y: 825.0, width: 790.0, align: "center".to_string(), font_size: 52.0 },
-            point_offset_y: 118.0,
             cta: LayoutParam { x: 110.0, y: 1515.0, width: 860.0, align: "center".to_string(), font_size: 33.0 },
             marker: "".to_string(),
         },
         "left_stack" => LayoutSpec {
             title: LayoutParam { x: 92.0, y: 350.0, width: 820.0, align: "left".to_string(), font_size: 72.0 },
             point: LayoutParam { x: 105.0, y: 710.0, width: 850.0, align: "left".to_string(), font_size: 48.0 },
-            point_offset_y: 118.0,
             cta: LayoutParam { x: 105.0, y: 1510.0, width: 850.0, align: "left".to_string(), font_size: 33.0 },
             marker: "- ".to_string(),
         },
         "right_stack" => LayoutSpec {
             title: LayoutParam { x: 155.0, y: 680.0, width: 820.0, align: "right".to_string(), font_size: 70.0 },
             point: LayoutParam { x: 155.0, y: 930.0, width: 820.0, align: "right".to_string(), font_size: 46.0 },
-            point_offset_y: 108.0,
             cta: LayoutParam { x: 155.0, y: 1510.0, width: 820.0, align: "right".to_string(), font_size: 33.0 },
             marker: "".to_string(),
         },
         "list_style" => LayoutSpec {
             title: LayoutParam { x: 90.0, y: 340.0, width: 900.0, align: "left".to_string(), font_size: 70.0 },
             point: LayoutParam { x: 110.0, y: 690.0, width: 850.0, align: "left".to_string(), font_size: 48.0 },
-            point_offset_y: 116.0,
             cta: LayoutParam { x: 105.0, y: 1510.0, width: 850.0, align: "left".to_string(), font_size: 33.0 },
             marker: "- ".to_string(),
         },
         "top_bottom" => LayoutSpec {
             title: LayoutParam { x: 90.0, y: 250.0, width: 900.0, align: "left".to_string(), font_size: 68.0 },
             point: LayoutParam { x: 90.0, y: 1180.0, width: 900.0, align: "left".to_string(), font_size: 54.0 },
-            point_offset_y: 94.0,
             cta: LayoutParam { x: 90.0, y: 1510.0, width: 900.0, align: "left".to_string(), font_size: 33.0 },
             marker: "".to_string(),
         },
         "one_word_hook" => LayoutSpec {
             title: LayoutParam { x: 80.0, y: 420.0, width: 920.0, align: "center".to_string(), font_size: 118.0 },
             point: LayoutParam { x: 145.0, y: 760.0, width: 790.0, align: "left".to_string(), font_size: 48.0 },
-            point_offset_y: 112.0,
             cta: LayoutParam { x: 110.0, y: 1510.0, width: 860.0, align: "center".to_string(), font_size: 33.0 },
             marker: "- ".to_string(),
         },
         "quote_style" => LayoutSpec {
             title: LayoutParam { x: 90.0, y: 660.0, width: 900.0, align: "center".to_string(), font_size: 78.0 },
             point: LayoutParam { x: 125.0, y: 1080.0, width: 830.0, align: "center".to_string(), font_size: 42.0 },
-            point_offset_y: 90.0,
             cta: LayoutParam { x: 110.0, y: 1450.0, width: 860.0, align: "center".to_string(), font_size: 33.0 },
             marker: "".to_string(),
         },
         "story_block" => LayoutSpec {
             title: LayoutParam { x: 90.0, y: 270.0, width: 900.0, align: "left".to_string(), font_size: 68.0 },
             point: LayoutParam { x: 100.0, y: 560.0, width: 880.0, align: "left".to_string(), font_size: 43.0 },
-            point_offset_y: 150.0,
             cta: LayoutParam { x: 100.0, y: 1510.0, width: 880.0, align: "left".to_string(), font_size: 33.0 },
             marker: "".to_string(),
         },
         "progress_reveal" => LayoutSpec {
             title: LayoutParam { x: 90.0, y: 420.0, width: 900.0, align: "left".to_string(), font_size: 54.0 },
             point: LayoutParam { x: 90.0, y: 770.0, width: 900.0, align: "center".to_string(), font_size: 92.0 },
-            point_offset_y: 0.0,
             cta: LayoutParam { x: 110.0, y: 1510.0, width: 860.0, align: "center".to_string(), font_size: 33.0 },
             marker: "".to_string(),
         },
         "center_card" => LayoutSpec {
             title: LayoutParam { x: 100.0, y: 480.0, width: 880.0, align: "center".to_string(), font_size: 70.0 },
             point: LayoutParam { x: 155.0, y: 830.0, width: 770.0, align: "center".to_string(), font_size: 50.0 },
-            point_offset_y: 112.0,
             cta: LayoutParam { x: 110.0, y: 1510.0, width: 860.0, align: "center".to_string(), font_size: 33.0 },
             marker: "".to_string(),
         },
@@ -230,7 +205,6 @@ pub fn get_layout_spec(layout: &str) -> LayoutSpec {
         _ => LayoutSpec {
             title: LayoutParam { x: 90.0, y: 520.0, width: 900.0, align: "center".to_string(), font_size: 84.0 },
             point: LayoutParam { x: 150.0, y: 790.0, width: 780.0, align: "center".to_string(), font_size: 50.0 },
-            point_offset_y: 112.0,
             cta: LayoutParam { x: 110.0, y: 1510.0, width: 860.0, align: "center".to_string(), font_size: 33.0 },
             marker: "".to_string(),
         },
@@ -284,7 +258,9 @@ fn normalize_render_text(value: &str) -> String {
 }
 
 fn repair_mojibake(value: &str) -> String {
-    let looks_broken = value.contains('â') || value.contains('ð') || value.contains('Ã');
+    let looks_broken = value.contains('\u{00E2}')
+        || value.contains('\u{00F0}')
+        || value.contains('\u{00C3}');
     if !looks_broken {
         return value.to_string();
     }
@@ -296,7 +272,7 @@ fn repair_mojibake(value: &str) -> String {
 
     match String::from_utf8(encoded.into_owned()) {
         Ok(fixed) if fixed.chars().any(|ch| matches!(ch, '\u{2018}'..='\u{201F}' | '\u{2026}' | '\u{2010}'..='\u{2014}')) => fixed,
-        Ok(fixed) if !fixed.contains('â') && !fixed.contains('Ã') => fixed,
+        Ok(fixed) if !fixed.contains('\u{00E2}') && !fixed.contains('\u{00C3}') => fixed,
         _ => value.to_string(),
     }
 }
@@ -344,14 +320,14 @@ fn point_position(script: &Script, spec: &LayoutSpec, font: &FontArc, layout: &s
             for idx in 0..point_index {
                 let prev_lines = point_text_lines(script, spec, font, layout, idx);
                 let prev_height = text_block_height(font, scale, &prev_lines) + block_gap;
-                if idx % 2 == 0 {
+                if idx.is_multiple_of(2) {
                     left_y += prev_height;
                 } else {
                     right_y += prev_height;
                 }
             }
 
-            if point_index % 2 == 0 {
+            if point_index.is_multiple_of(2) {
                 (spec.point.x, left_y, spec.point.align.clone())
             } else {
                 (spec.point.x + column_gap, right_y + row_offset, spec.point.align.clone())
@@ -417,6 +393,7 @@ pub fn wrap_text(font: &FontArc, scale: PxScale, text: &str, max_width: f32) -> 
     lines
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn draw_text_lines(
     img: &mut RgbaImage,
     font: &FontArc,
@@ -594,6 +571,7 @@ pub fn make_overlay(
     fs::create_dir_all(output_folder)?;
     let file_name = format!("{}-{}-{}.png", slugify(&script.title), stamp, layer_index + 1);
     let output_path = output_folder.join(file_name);
-    image.save(&output_path).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    image.save(&output_path).map_err(std::io::Error::other)?;
     Ok(output_path)
 }
+

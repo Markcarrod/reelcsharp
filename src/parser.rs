@@ -74,16 +74,16 @@ pub fn normalize_layout(value: &str) -> String {
     match normalized {
         "question_answer" | "question" | "answer" => "question_answer".to_string(),
         "advice" | "list" | "list_style" => "list_style".to_string(),
-        "reels" | "center" | "center_stack" | "single_stack" | "feed_layout" => "center_stack".to_string(),
+        "reels" | "center" | "center_stack" => "center_stack".to_string(),
         "left" | "left_stack" => "left_stack".to_string(),
         "right" | "right_stack" => "right_stack".to_string(),
-        "top_bottom" | "timeline_layout" => "top_bottom".to_string(),
+        "top_bottom" => "top_bottom".to_string(),
         "one_word" | "one_word_hook" => "one_word_hook".to_string(),
         "quote" | "quote_style" => "quote_style".to_string(),
-        "story" | "story_block" | "accordion_layout" => "story_block".to_string(),
+        "story" | "story_block" => "story_block".to_string(),
         "full_text" | "full_list" | "all_at_once" | "static_text" => "story_block".to_string(),
         "progress" | "progress_reveal" => "progress_reveal".to_string(),
-        "card" | "center_card" | "card_carousel" | "centered_spotlight" => "center_card".to_string(),
+        "card" | "center_card" => "center_card".to_string(),
         "two_column_split" => "two_column_split".to_string(),
         "grid_layout" => "grid_layout".to_string(),
         "masonry_layout" => "masonry_layout".to_string(),
@@ -130,6 +130,7 @@ fn parse_script_block(block: &str, index: usize) -> Script {
     let line_num_re = Regex::new(r"(?i)^line_?\d+$").unwrap();
     let metadata_key_re = Regex::new(r"(?i)^[a-z][a-z0-9_ -]*$").unwrap();
     let list_prefix_re = Regex::new(r"^\s*(?:[-*]|\d+[.)])\s*").unwrap();
+    let duration_num_re = Regex::new(r"\d+(?:\.\d+)?").unwrap();
 
     let mut push_point = |raw_value: &str| {
         let cleaned = list_prefix_re.replace(raw_value, "").trim().to_string();
@@ -175,8 +176,7 @@ fn parse_script_block(block: &str, index: usize) -> Script {
                     }
                 }
                 "duration" => {
-                    let num_re = Regex::new(r"\d+(?:\.\d+)?").unwrap();
-                    if let Some(mat) = num_re.find(value) {
+                    if let Some(mat) = duration_num_re.find(value) {
                         if let Ok(d) = mat.as_str().parse::<f32>() {
                             duration = Some(d);
                         }
