@@ -41,6 +41,8 @@ class RustReelForgeDesktop(tk.Tk):
         self.script_source = tk.StringVar(value="")
         self.duration = tk.StringVar(value="12.5")
         self.workers = tk.StringVar(value="auto")
+        self.manual_workers = tk.BooleanVar(value=False)
+        self.last_manual_workers = "4"
         self.blur_strength = tk.StringVar(value="none")
         self.status = tk.StringVar(value="Ready")
         self.batch_progress = tk.IntVar(value=0)
@@ -82,11 +84,18 @@ class RustReelForgeDesktop(tk.Tk):
         # Render options
         options = ttk.LabelFrame(left, text="Performance Controls", padding=10)
         options.grid(row=1, column=0, sticky="ew", pady=(12, 0))
-        options.columnconfigure(3, weight=1)
+        options.columnconfigure(4, weight=1)
         ttk.Label(options, text="Video Duration").grid(row=0, column=0, sticky="w")
         ttk.Entry(options, textvariable=self.duration, width=8).grid(row=0, column=1, sticky="w", padx=(8, 22))
         ttk.Label(options, text="Parallel Threads / auto").grid(row=0, column=2, sticky="w")
-        ttk.Entry(options, textvariable=self.workers, width=8).grid(row=0, column=3, sticky="w", padx=(8, 0))
+        self.workers_entry = ttk.Entry(options, textvariable=self.workers, width=8)
+        self.workers_entry.grid(row=0, column=3, sticky="w", padx=(8, 8))
+        ttk.Checkbutton(
+            options,
+            text="Manual",
+            variable=self.manual_workers,
+            command=self.toggle_manual_workers,
+        ).grid(row=0, column=4, sticky="w")
         ttk.Label(options, text="Blur").grid(row=1, column=0, sticky="w", pady=(8, 0))
         ttk.Combobox(
             options,
@@ -213,7 +222,7 @@ class RustReelForgeDesktop(tk.Tk):
         self.script_source.set("")
         self.save_state()
 
-    def current_state(self) -> dict[str, str]:
+    def current_state(self) -> dict[str, str | bool]:
         return {
             "video_folder": self.video_folder.get(),
             "music_folder": self.music_folder.get(),
@@ -222,13 +231,31 @@ class RustReelForgeDesktop(tk.Tk):
             "script_source": self.script_source.get(),
             "duration": self.duration.get(),
             "workers": self.normalized_workers(),
+            "manual_workers": self.manual_workers.get(),
             "blur_strength": self.blur_strength.get(),
             "script_text": self.script_text.get("1.0", "end").rstrip(),
         }
 
     def normalized_workers(self) -> str:
         value = self.workers.get().strip()
-        return value or "auto"
+        if self.manual_workers.get():
+            return value or self.last_manual_workers or "4"
+        return "auto"
+
+    def toggle_manual_workers(self) -> None:
+        if self.manual_workers.get():
+            current = self.workers.get().strip()
+            if current and current.isdigit():
+                self.last_manual_workers = current
+            self.workers.set(self.last_manual_workers or "4")
+            self.workers_entry.configure(state="normal")
+        else:
+            current = self.workers.get().strip()
+            if current and current.isdigit():
+                self.last_manual_workers = current
+            self.workers.set("auto")
+            self.workers_entry.configure(state="disabled")
+        self.save_state()
 
     def load_saved_state(self) -> None:
         if not STATE_PATH.exists():
@@ -243,7 +270,13 @@ class RustReelForgeDesktop(tk.Tk):
         self.overlay_folder.set(state.get("overlay_folder", self.overlay_folder.get()))
         self.script_source.set(state.get("script_source", self.script_source.get()))
         self.duration.set(state.get("duration", self.duration.get()))
-        self.workers.set((state.get("workers", self.workers.get()) or "auto").strip() or "auto")
+        saved_workers = (state.get("workers", self.workers.get()) or "auto").strip() or "auto"
+        saved_manual = bool(state.get("manual_workers", saved_workers.isdigit()))
+        if saved_workers.isdigit():
+            self.last_manual_workers = saved_workers
+        self.manual_workers.set(saved_manual)
+        self.workers.set(saved_workers if saved_manual else "auto")
+        self.workers_entry.configure(state="normal" if saved_manual else "disabled")
         self.blur_strength.set(state.get("blur_strength", self.blur_strength.get()))
         saved_script = state.get("script_text")
         if saved_script:
@@ -427,6 +460,12 @@ class RustReelForgeDesktop(tk.Tk):
     def start_render(self) -> None:
         self.cancel_render()
         self.save_state()
+
+        if self.manual_workers.get():
+            worker_value = self.workers.get().strip()
+            if not worker_value.isdigit() or int(worker_value) <= 0:
+                messagebox.showerror("Error", "Manual threads must be a positive whole number.")
+                return
 
         script_source = self.script_source.get().strip()
         if script_source:
