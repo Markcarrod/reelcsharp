@@ -44,14 +44,6 @@ impl BlurStrength {
         }
     }
 
-    pub fn ffmpeg_filter(self) -> Option<&'static str> {
-        match self {
-            Self::None => None,
-            Self::Light => Some("gblur=sigma=8:steps=1"),
-            Self::Middle => Some("gblur=sigma=16:steps=2"),
-            Self::Heavy => Some("gblur=sigma=28:steps=2"),
-        }
-    }
 }
 
 pub fn slugify(value: &str) -> String {
