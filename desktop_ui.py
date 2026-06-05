@@ -221,10 +221,14 @@ class RustReelForgeDesktop(tk.Tk):
             "overlay_folder": self.overlay_folder.get(),
             "script_source": self.script_source.get(),
             "duration": self.duration.get(),
-            "workers": self.workers.get(),
+            "workers": self.normalized_workers(),
             "blur_strength": self.blur_strength.get(),
             "script_text": self.script_text.get("1.0", "end").rstrip(),
         }
+
+    def normalized_workers(self) -> str:
+        value = self.workers.get().strip()
+        return value or "auto"
 
     def load_saved_state(self) -> None:
         if not STATE_PATH.exists():
@@ -239,7 +243,7 @@ class RustReelForgeDesktop(tk.Tk):
         self.overlay_folder.set(state.get("overlay_folder", self.overlay_folder.get()))
         self.script_source.set(state.get("script_source", self.script_source.get()))
         self.duration.set(state.get("duration", self.duration.get()))
-        self.workers.set(state.get("workers", self.workers.get()))
+        self.workers.set((state.get("workers", self.workers.get()) or "auto").strip() or "auto")
         self.blur_strength.set(state.get("blur_strength", self.blur_strength.get()))
         saved_script = state.get("script_text")
         if saved_script:
@@ -415,7 +419,7 @@ class RustReelForgeDesktop(tk.Tk):
             "--output", self.output_folder.get(),
             "--overlays", self.overlay_folder.get(),
             "--duration", self.duration.get(),
-            "--workers", self.workers.get(),
+            "--workers", self.normalized_workers(),
             "--blur", self.blur_strength.get(),
         ])
         return cmd
