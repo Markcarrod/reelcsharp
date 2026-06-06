@@ -47,7 +47,7 @@ class RustReelForgeDesktop(tk.Tk):
         self.output_folder = tk.StringVar(value=str(DEFAULT_OUTPUT.resolve()))
         self.overlay_folder = tk.StringVar(value=str(DEFAULT_OVERLAYS.resolve()))
         self.script_source = tk.StringVar(value="")
-        self.duration = tk.StringVar(value="12.5")
+        self.duration = tk.StringVar(value="12")
         self.workers = tk.StringVar(value="auto")
         self.manual_workers = tk.BooleanVar(value=False)
         self.last_manual_workers = "4"

@@ -1,9 +1,9 @@
-﻿use ab_glyph::{Font, FontArc, Glyph, PxScale, ScaleFont};
+use crate::parser::{normalize_layout, slugify, Script};
+use ab_glyph::{Font, FontArc, Glyph, PxScale, ScaleFont};
 use encoding_rs::WINDOWS_1252;
 use image::{Rgba, RgbaImage};
 use std::fs;
 use std::path::{Path, PathBuf};
-use crate::parser::{Script, slugify, normalize_layout};
 
 pub const WIDTH: u32 = 1080;
 pub const HEIGHT: u32 = 1920;
@@ -27,154 +27,604 @@ pub struct LayoutSpec {
 pub fn get_layout_spec(layout: &str) -> LayoutSpec {
     match layout {
         "two_column_split" => LayoutSpec {
-            title: LayoutParam { x: 80.0, y: 320.0, width: 420.0, align: "left".to_string(), font_size: 72.0 },
-            point: LayoutParam { x: 560.0, y: 500.0, width: 360.0, align: "left".to_string(), font_size: 44.0 },
-            cta: LayoutParam { x: 560.0, y: 1470.0, width: 360.0, align: "left".to_string(), font_size: 30.0 },
+            title: LayoutParam {
+                x: 80.0,
+                y: 320.0,
+                width: 420.0,
+                align: "left".to_string(),
+                font_size: 72.0,
+            },
+            point: LayoutParam {
+                x: 560.0,
+                y: 500.0,
+                width: 360.0,
+                align: "left".to_string(),
+                font_size: 44.0,
+            },
+            cta: LayoutParam {
+                x: 560.0,
+                y: 1470.0,
+                width: 360.0,
+                align: "left".to_string(),
+                font_size: 30.0,
+            },
             marker: "".to_string(),
         },
         "grid_layout" => LayoutSpec {
-            title: LayoutParam { x: 100.0, y: 250.0, width: 880.0, align: "center".to_string(), font_size: 72.0 },
-            point: LayoutParam { x: 110.0, y: 640.0, width: 380.0, align: "left".to_string(), font_size: 42.0 },
-            cta: LayoutParam { x: 100.0, y: 1520.0, width: 880.0, align: "center".to_string(), font_size: 30.0 },
+            title: LayoutParam {
+                x: 100.0,
+                y: 250.0,
+                width: 880.0,
+                align: "center".to_string(),
+                font_size: 72.0,
+            },
+            point: LayoutParam {
+                x: 110.0,
+                y: 640.0,
+                width: 380.0,
+                align: "left".to_string(),
+                font_size: 42.0,
+            },
+            cta: LayoutParam {
+                x: 100.0,
+                y: 1520.0,
+                width: 880.0,
+                align: "center".to_string(),
+                font_size: 30.0,
+            },
             marker: "".to_string(),
         },
         "masonry_layout" => LayoutSpec {
-            title: LayoutParam { x: 90.0, y: 260.0, width: 900.0, align: "left".to_string(), font_size: 70.0 },
-            point: LayoutParam { x: 95.0, y: 630.0, width: 430.0, align: "left".to_string(), font_size: 40.0 },
-            cta: LayoutParam { x: 100.0, y: 1510.0, width: 880.0, align: "left".to_string(), font_size: 30.0 },
+            title: LayoutParam {
+                x: 90.0,
+                y: 260.0,
+                width: 900.0,
+                align: "left".to_string(),
+                font_size: 70.0,
+            },
+            point: LayoutParam {
+                x: 95.0,
+                y: 630.0,
+                width: 430.0,
+                align: "left".to_string(),
+                font_size: 40.0,
+            },
+            cta: LayoutParam {
+                x: 100.0,
+                y: 1510.0,
+                width: 880.0,
+                align: "left".to_string(),
+                font_size: 30.0,
+            },
             marker: "- ".to_string(),
         },
         "hero_list" => LayoutSpec {
-            title: LayoutParam { x: 80.0, y: 300.0, width: 920.0, align: "center".to_string(), font_size: 82.0 },
-            point: LayoutParam { x: 120.0, y: 860.0, width: 840.0, align: "left".to_string(), font_size: 46.0 },
-            cta: LayoutParam { x: 110.0, y: 1515.0, width: 860.0, align: "center".to_string(), font_size: 30.0 },
+            title: LayoutParam {
+                x: 80.0,
+                y: 300.0,
+                width: 920.0,
+                align: "center".to_string(),
+                font_size: 82.0,
+            },
+            point: LayoutParam {
+                x: 120.0,
+                y: 860.0,
+                width: 840.0,
+                align: "left".to_string(),
+                font_size: 46.0,
+            },
+            cta: LayoutParam {
+                x: 110.0,
+                y: 1515.0,
+                width: 860.0,
+                align: "center".to_string(),
+                font_size: 30.0,
+            },
             marker: "- ".to_string(),
         },
         "alternating_rows" => LayoutSpec {
-            title: LayoutParam { x: 100.0, y: 260.0, width: 880.0, align: "center".to_string(), font_size: 72.0 },
-            point: LayoutParam { x: 110.0, y: 680.0, width: 860.0, align: "left".to_string(), font_size: 44.0 },
-            cta: LayoutParam { x: 110.0, y: 1510.0, width: 860.0, align: "center".to_string(), font_size: 30.0 },
+            title: LayoutParam {
+                x: 100.0,
+                y: 260.0,
+                width: 880.0,
+                align: "center".to_string(),
+                font_size: 72.0,
+            },
+            point: LayoutParam {
+                x: 110.0,
+                y: 680.0,
+                width: 860.0,
+                align: "left".to_string(),
+                font_size: 44.0,
+            },
+            cta: LayoutParam {
+                x: 110.0,
+                y: 1510.0,
+                width: 860.0,
+                align: "center".to_string(),
+                font_size: 30.0,
+            },
             marker: "".to_string(),
         },
         "sidebar_layout" => LayoutSpec {
-            title: LayoutParam { x: 90.0, y: 320.0, width: 640.0, align: "left".to_string(), font_size: 74.0 },
-            point: LayoutParam { x: 120.0, y: 760.0, width: 610.0, align: "left".to_string(), font_size: 42.0 },
-            cta: LayoutParam { x: 120.0, y: 1490.0, width: 610.0, align: "left".to_string(), font_size: 30.0 },
+            title: LayoutParam {
+                x: 90.0,
+                y: 320.0,
+                width: 640.0,
+                align: "left".to_string(),
+                font_size: 74.0,
+            },
+            point: LayoutParam {
+                x: 120.0,
+                y: 760.0,
+                width: 610.0,
+                align: "left".to_string(),
+                font_size: 42.0,
+            },
+            cta: LayoutParam {
+                x: 120.0,
+                y: 1490.0,
+                width: 610.0,
+                align: "left".to_string(),
+                font_size: 30.0,
+            },
             marker: "- ".to_string(),
         },
         "collage_layout" => LayoutSpec {
-            title: LayoutParam { x: 90.0, y: 280.0, width: 900.0, align: "center".to_string(), font_size: 76.0 },
-            point: LayoutParam { x: 120.0, y: 700.0, width: 360.0, align: "left".to_string(), font_size: 38.0 },
-            cta: LayoutParam { x: 110.0, y: 1510.0, width: 860.0, align: "center".to_string(), font_size: 30.0 },
+            title: LayoutParam {
+                x: 90.0,
+                y: 280.0,
+                width: 900.0,
+                align: "center".to_string(),
+                font_size: 76.0,
+            },
+            point: LayoutParam {
+                x: 120.0,
+                y: 700.0,
+                width: 360.0,
+                align: "left".to_string(),
+                font_size: 38.0,
+            },
+            cta: LayoutParam {
+                x: 110.0,
+                y: 1510.0,
+                width: 860.0,
+                align: "center".to_string(),
+                font_size: 30.0,
+            },
             marker: "".to_string(),
         },
         "auto_fit_tiles" => LayoutSpec {
-            title: LayoutParam { x: 90.0, y: 280.0, width: 900.0, align: "center".to_string(), font_size: 74.0 },
-            point: LayoutParam { x: 110.0, y: 680.0, width: 380.0, align: "left".to_string(), font_size: 40.0 },
-            cta: LayoutParam { x: 100.0, y: 1510.0, width: 880.0, align: "center".to_string(), font_size: 30.0 },
+            title: LayoutParam {
+                x: 90.0,
+                y: 280.0,
+                width: 900.0,
+                align: "center".to_string(),
+                font_size: 74.0,
+            },
+            point: LayoutParam {
+                x: 110.0,
+                y: 680.0,
+                width: 380.0,
+                align: "left".to_string(),
+                font_size: 40.0,
+            },
+            cta: LayoutParam {
+                x: 100.0,
+                y: 1510.0,
+                width: 880.0,
+                align: "center".to_string(),
+                font_size: 30.0,
+            },
             marker: "".to_string(),
         },
         "tabbed_layout" => LayoutSpec {
-            title: LayoutParam { x: 90.0, y: 330.0, width: 900.0, align: "left".to_string(), font_size: 72.0 },
-            point: LayoutParam { x: 120.0, y: 770.0, width: 840.0, align: "left".to_string(), font_size: 44.0 },
-            cta: LayoutParam { x: 110.0, y: 1495.0, width: 860.0, align: "left".to_string(), font_size: 30.0 },
+            title: LayoutParam {
+                x: 90.0,
+                y: 330.0,
+                width: 900.0,
+                align: "left".to_string(),
+                font_size: 72.0,
+            },
+            point: LayoutParam {
+                x: 120.0,
+                y: 770.0,
+                width: 840.0,
+                align: "left".to_string(),
+                font_size: 44.0,
+            },
+            cta: LayoutParam {
+                x: 110.0,
+                y: 1495.0,
+                width: 860.0,
+                align: "left".to_string(),
+                font_size: 30.0,
+            },
             marker: "> ".to_string(),
         },
         "magazine_layout" => LayoutSpec {
-            title: LayoutParam { x: 90.0, y: 250.0, width: 900.0, align: "left".to_string(), font_size: 80.0 },
-            point: LayoutParam { x: 120.0, y: 760.0, width: 540.0, align: "left".to_string(), font_size: 42.0 },
-            cta: LayoutParam { x: 120.0, y: 1510.0, width: 840.0, align: "left".to_string(), font_size: 30.0 },
+            title: LayoutParam {
+                x: 90.0,
+                y: 250.0,
+                width: 900.0,
+                align: "left".to_string(),
+                font_size: 80.0,
+            },
+            point: LayoutParam {
+                x: 120.0,
+                y: 760.0,
+                width: 540.0,
+                align: "left".to_string(),
+                font_size: 42.0,
+            },
+            cta: LayoutParam {
+                x: 120.0,
+                y: 1510.0,
+                width: 840.0,
+                align: "left".to_string(),
+                font_size: 30.0,
+            },
             marker: "".to_string(),
         },
         "template_rotation_layout" => LayoutSpec {
-            title: LayoutParam { x: 90.0, y: 470.0, width: 900.0, align: "center".to_string(), font_size: 80.0 },
-            point: LayoutParam { x: 150.0, y: 820.0, width: 780.0, align: "center".to_string(), font_size: 48.0 },
-            cta: LayoutParam { x: 110.0, y: 1515.0, width: 860.0, align: "center".to_string(), font_size: 30.0 },
+            title: LayoutParam {
+                x: 90.0,
+                y: 470.0,
+                width: 900.0,
+                align: "center".to_string(),
+                font_size: 80.0,
+            },
+            point: LayoutParam {
+                x: 150.0,
+                y: 820.0,
+                width: 780.0,
+                align: "center".to_string(),
+                font_size: 48.0,
+            },
+            cta: LayoutParam {
+                x: 110.0,
+                y: 1515.0,
+                width: 860.0,
+                align: "center".to_string(),
+                font_size: 30.0,
+            },
             marker: "".to_string(),
         },
         "priority_based_layout" => LayoutSpec {
-            title: LayoutParam { x: 80.0, y: 310.0, width: 920.0, align: "center".to_string(), font_size: 88.0 },
-            point: LayoutParam { x: 120.0, y: 920.0, width: 840.0, align: "center".to_string(), font_size: 42.0 },
-            cta: LayoutParam { x: 100.0, y: 1510.0, width: 880.0, align: "center".to_string(), font_size: 30.0 },
+            title: LayoutParam {
+                x: 80.0,
+                y: 310.0,
+                width: 920.0,
+                align: "center".to_string(),
+                font_size: 88.0,
+            },
+            point: LayoutParam {
+                x: 120.0,
+                y: 920.0,
+                width: 840.0,
+                align: "center".to_string(),
+                font_size: 42.0,
+            },
+            cta: LayoutParam {
+                x: 100.0,
+                y: 1510.0,
+                width: 880.0,
+                align: "center".to_string(),
+                font_size: 30.0,
+            },
             marker: "".to_string(),
         },
         "adaptive_smart_layout" => LayoutSpec {
-            title: LayoutParam { x: 90.0, y: 360.0, width: 900.0, align: "center".to_string(), font_size: 76.0 },
-            point: LayoutParam { x: 120.0, y: 760.0, width: 840.0, align: "center".to_string(), font_size: 46.0 },
-            cta: LayoutParam { x: 110.0, y: 1510.0, width: 860.0, align: "center".to_string(), font_size: 30.0 },
+            title: LayoutParam {
+                x: 90.0,
+                y: 360.0,
+                width: 900.0,
+                align: "center".to_string(),
+                font_size: 76.0,
+            },
+            point: LayoutParam {
+                x: 120.0,
+                y: 760.0,
+                width: 840.0,
+                align: "center".to_string(),
+                font_size: 46.0,
+            },
+            cta: LayoutParam {
+                x: 110.0,
+                y: 1510.0,
+                width: 860.0,
+                align: "center".to_string(),
+                font_size: 30.0,
+            },
             marker: "".to_string(),
         },
         "fallback_universal_layout" => LayoutSpec {
-            title: LayoutParam { x: 90.0, y: 520.0, width: 900.0, align: "center".to_string(), font_size: 82.0 },
-            point: LayoutParam { x: 150.0, y: 820.0, width: 780.0, align: "center".to_string(), font_size: 48.0 },
-            cta: LayoutParam { x: 110.0, y: 1510.0, width: 860.0, align: "center".to_string(), font_size: 30.0 },
+            title: LayoutParam {
+                x: 90.0,
+                y: 520.0,
+                width: 900.0,
+                align: "center".to_string(),
+                font_size: 82.0,
+            },
+            point: LayoutParam {
+                x: 150.0,
+                y: 820.0,
+                width: 780.0,
+                align: "center".to_string(),
+                font_size: 48.0,
+            },
+            cta: LayoutParam {
+                x: 110.0,
+                y: 1510.0,
+                width: 860.0,
+                align: "center".to_string(),
+                font_size: 30.0,
+            },
             marker: "".to_string(),
         },
         "question_answer" => LayoutSpec {
-            title: LayoutParam { x: 105.0, y: 500.0, width: 870.0, align: "center".to_string(), font_size: 76.0 },
-            point: LayoutParam { x: 145.0, y: 825.0, width: 790.0, align: "center".to_string(), font_size: 52.0 },
-            cta: LayoutParam { x: 110.0, y: 1515.0, width: 860.0, align: "center".to_string(), font_size: 33.0 },
+            title: LayoutParam {
+                x: 105.0,
+                y: 500.0,
+                width: 870.0,
+                align: "center".to_string(),
+                font_size: 76.0,
+            },
+            point: LayoutParam {
+                x: 145.0,
+                y: 825.0,
+                width: 790.0,
+                align: "center".to_string(),
+                font_size: 52.0,
+            },
+            cta: LayoutParam {
+                x: 110.0,
+                y: 1515.0,
+                width: 860.0,
+                align: "center".to_string(),
+                font_size: 33.0,
+            },
             marker: "".to_string(),
         },
         "left_stack" => LayoutSpec {
-            title: LayoutParam { x: 92.0, y: 350.0, width: 820.0, align: "left".to_string(), font_size: 72.0 },
-            point: LayoutParam { x: 105.0, y: 710.0, width: 850.0, align: "left".to_string(), font_size: 48.0 },
-            cta: LayoutParam { x: 105.0, y: 1510.0, width: 850.0, align: "left".to_string(), font_size: 33.0 },
+            title: LayoutParam {
+                x: 92.0,
+                y: 350.0,
+                width: 820.0,
+                align: "left".to_string(),
+                font_size: 72.0,
+            },
+            point: LayoutParam {
+                x: 105.0,
+                y: 710.0,
+                width: 850.0,
+                align: "left".to_string(),
+                font_size: 48.0,
+            },
+            cta: LayoutParam {
+                x: 105.0,
+                y: 1510.0,
+                width: 850.0,
+                align: "left".to_string(),
+                font_size: 33.0,
+            },
             marker: "- ".to_string(),
         },
         "right_stack" => LayoutSpec {
-            title: LayoutParam { x: 155.0, y: 680.0, width: 820.0, align: "right".to_string(), font_size: 70.0 },
-            point: LayoutParam { x: 155.0, y: 930.0, width: 820.0, align: "right".to_string(), font_size: 46.0 },
-            cta: LayoutParam { x: 155.0, y: 1510.0, width: 820.0, align: "right".to_string(), font_size: 33.0 },
+            title: LayoutParam {
+                x: 155.0,
+                y: 680.0,
+                width: 820.0,
+                align: "right".to_string(),
+                font_size: 70.0,
+            },
+            point: LayoutParam {
+                x: 155.0,
+                y: 930.0,
+                width: 820.0,
+                align: "right".to_string(),
+                font_size: 46.0,
+            },
+            cta: LayoutParam {
+                x: 155.0,
+                y: 1510.0,
+                width: 820.0,
+                align: "right".to_string(),
+                font_size: 33.0,
+            },
             marker: "".to_string(),
         },
         "list_style" => LayoutSpec {
-            title: LayoutParam { x: 90.0, y: 340.0, width: 900.0, align: "left".to_string(), font_size: 70.0 },
-            point: LayoutParam { x: 110.0, y: 690.0, width: 850.0, align: "left".to_string(), font_size: 48.0 },
-            cta: LayoutParam { x: 105.0, y: 1510.0, width: 850.0, align: "left".to_string(), font_size: 33.0 },
+            title: LayoutParam {
+                x: 90.0,
+                y: 340.0,
+                width: 900.0,
+                align: "left".to_string(),
+                font_size: 70.0,
+            },
+            point: LayoutParam {
+                x: 110.0,
+                y: 690.0,
+                width: 850.0,
+                align: "left".to_string(),
+                font_size: 48.0,
+            },
+            cta: LayoutParam {
+                x: 105.0,
+                y: 1510.0,
+                width: 850.0,
+                align: "left".to_string(),
+                font_size: 33.0,
+            },
             marker: "- ".to_string(),
         },
         "top_bottom" => LayoutSpec {
-            title: LayoutParam { x: 90.0, y: 250.0, width: 900.0, align: "left".to_string(), font_size: 68.0 },
-            point: LayoutParam { x: 90.0, y: 1180.0, width: 900.0, align: "left".to_string(), font_size: 54.0 },
-            cta: LayoutParam { x: 90.0, y: 1510.0, width: 900.0, align: "left".to_string(), font_size: 33.0 },
+            title: LayoutParam {
+                x: 90.0,
+                y: 250.0,
+                width: 900.0,
+                align: "left".to_string(),
+                font_size: 68.0,
+            },
+            point: LayoutParam {
+                x: 90.0,
+                y: 1180.0,
+                width: 900.0,
+                align: "left".to_string(),
+                font_size: 54.0,
+            },
+            cta: LayoutParam {
+                x: 90.0,
+                y: 1510.0,
+                width: 900.0,
+                align: "left".to_string(),
+                font_size: 33.0,
+            },
             marker: "".to_string(),
         },
         "one_word_hook" => LayoutSpec {
-            title: LayoutParam { x: 80.0, y: 420.0, width: 920.0, align: "center".to_string(), font_size: 118.0 },
-            point: LayoutParam { x: 145.0, y: 760.0, width: 790.0, align: "left".to_string(), font_size: 48.0 },
-            cta: LayoutParam { x: 110.0, y: 1510.0, width: 860.0, align: "center".to_string(), font_size: 33.0 },
+            title: LayoutParam {
+                x: 80.0,
+                y: 420.0,
+                width: 920.0,
+                align: "center".to_string(),
+                font_size: 118.0,
+            },
+            point: LayoutParam {
+                x: 145.0,
+                y: 760.0,
+                width: 790.0,
+                align: "left".to_string(),
+                font_size: 48.0,
+            },
+            cta: LayoutParam {
+                x: 110.0,
+                y: 1510.0,
+                width: 860.0,
+                align: "center".to_string(),
+                font_size: 33.0,
+            },
             marker: "- ".to_string(),
         },
         "quote_style" => LayoutSpec {
-            title: LayoutParam { x: 90.0, y: 660.0, width: 900.0, align: "center".to_string(), font_size: 78.0 },
-            point: LayoutParam { x: 125.0, y: 1080.0, width: 830.0, align: "center".to_string(), font_size: 42.0 },
-            cta: LayoutParam { x: 110.0, y: 1450.0, width: 860.0, align: "center".to_string(), font_size: 33.0 },
+            title: LayoutParam {
+                x: 90.0,
+                y: 660.0,
+                width: 900.0,
+                align: "center".to_string(),
+                font_size: 78.0,
+            },
+            point: LayoutParam {
+                x: 125.0,
+                y: 1080.0,
+                width: 830.0,
+                align: "center".to_string(),
+                font_size: 42.0,
+            },
+            cta: LayoutParam {
+                x: 110.0,
+                y: 1450.0,
+                width: 860.0,
+                align: "center".to_string(),
+                font_size: 33.0,
+            },
             marker: "".to_string(),
         },
         "story_block" => LayoutSpec {
-            title: LayoutParam { x: 90.0, y: 270.0, width: 900.0, align: "left".to_string(), font_size: 68.0 },
-            point: LayoutParam { x: 100.0, y: 560.0, width: 880.0, align: "left".to_string(), font_size: 43.0 },
-            cta: LayoutParam { x: 100.0, y: 1510.0, width: 880.0, align: "left".to_string(), font_size: 33.0 },
+            title: LayoutParam {
+                x: 90.0,
+                y: 270.0,
+                width: 900.0,
+                align: "left".to_string(),
+                font_size: 68.0,
+            },
+            point: LayoutParam {
+                x: 100.0,
+                y: 560.0,
+                width: 880.0,
+                align: "left".to_string(),
+                font_size: 43.0,
+            },
+            cta: LayoutParam {
+                x: 100.0,
+                y: 1510.0,
+                width: 880.0,
+                align: "left".to_string(),
+                font_size: 33.0,
+            },
             marker: "".to_string(),
         },
         "progress_reveal" => LayoutSpec {
-            title: LayoutParam { x: 90.0, y: 420.0, width: 900.0, align: "left".to_string(), font_size: 54.0 },
-            point: LayoutParam { x: 90.0, y: 770.0, width: 900.0, align: "center".to_string(), font_size: 92.0 },
-            cta: LayoutParam { x: 110.0, y: 1510.0, width: 860.0, align: "center".to_string(), font_size: 33.0 },
+            title: LayoutParam {
+                x: 90.0,
+                y: 420.0,
+                width: 900.0,
+                align: "left".to_string(),
+                font_size: 54.0,
+            },
+            point: LayoutParam {
+                x: 90.0,
+                y: 770.0,
+                width: 900.0,
+                align: "center".to_string(),
+                font_size: 92.0,
+            },
+            cta: LayoutParam {
+                x: 110.0,
+                y: 1510.0,
+                width: 860.0,
+                align: "center".to_string(),
+                font_size: 33.0,
+            },
             marker: "".to_string(),
         },
         "center_card" => LayoutSpec {
-            title: LayoutParam { x: 100.0, y: 480.0, width: 880.0, align: "center".to_string(), font_size: 70.0 },
-            point: LayoutParam { x: 155.0, y: 830.0, width: 770.0, align: "center".to_string(), font_size: 50.0 },
-            cta: LayoutParam { x: 110.0, y: 1510.0, width: 860.0, align: "center".to_string(), font_size: 33.0 },
+            title: LayoutParam {
+                x: 100.0,
+                y: 480.0,
+                width: 880.0,
+                align: "center".to_string(),
+                font_size: 70.0,
+            },
+            point: LayoutParam {
+                x: 155.0,
+                y: 830.0,
+                width: 770.0,
+                align: "center".to_string(),
+                font_size: 50.0,
+            },
+            cta: LayoutParam {
+                x: 110.0,
+                y: 1510.0,
+                width: 860.0,
+                align: "center".to_string(),
+                font_size: 33.0,
+            },
             marker: "".to_string(),
         },
         // center_stack
         _ => LayoutSpec {
-            title: LayoutParam { x: 90.0, y: 520.0, width: 900.0, align: "center".to_string(), font_size: 84.0 },
-            point: LayoutParam { x: 150.0, y: 790.0, width: 780.0, align: "center".to_string(), font_size: 50.0 },
-            cta: LayoutParam { x: 110.0, y: 1510.0, width: 860.0, align: "center".to_string(), font_size: 33.0 },
+            title: LayoutParam {
+                x: 90.0,
+                y: 520.0,
+                width: 900.0,
+                align: "center".to_string(),
+                font_size: 84.0,
+            },
+            point: LayoutParam {
+                x: 150.0,
+                y: 790.0,
+                width: 780.0,
+                align: "center".to_string(),
+                font_size: 50.0,
+            },
+            cta: LayoutParam {
+                x: 110.0,
+                y: 1510.0,
+                width: 860.0,
+                align: "center".to_string(),
+                font_size: 33.0,
+            },
             marker: "".to_string(),
         },
     }
@@ -227,9 +677,8 @@ fn normalize_render_text(value: &str) -> String {
 }
 
 fn repair_mojibake(value: &str) -> String {
-    let looks_broken = value.contains('\u{00E2}')
-        || value.contains('\u{00F0}')
-        || value.contains('\u{00C3}');
+    let looks_broken =
+        value.contains('\u{00E2}') || value.contains('\u{00F0}') || value.contains('\u{00C3}');
     if !looks_broken {
         return value.to_string();
     }
@@ -240,7 +689,13 @@ fn repair_mojibake(value: &str) -> String {
     }
 
     match String::from_utf8(encoded.into_owned()) {
-        Ok(fixed) if fixed.chars().any(|ch| matches!(ch, '\u{2018}'..='\u{201F}' | '\u{2026}' | '\u{2010}'..='\u{2014}')) => fixed,
+        Ok(fixed)
+            if fixed.chars().any(
+                |ch| matches!(ch, '\u{2018}'..='\u{201F}' | '\u{2026}' | '\u{2010}'..='\u{2014}'),
+            ) =>
+        {
+            fixed
+        }
         Ok(fixed) if !fixed.contains('\u{00E2}') && !fixed.contains('\u{00C3}') => fixed,
         _ => value.to_string(),
     }
@@ -323,15 +778,20 @@ fn point_text(script: &Script, spec: &LayoutSpec, layout: &str, point_index: usi
     }
 
     if spec.marker == "- " && script_prefers_numbered_list(script) {
-        let (number, rest) =
-            parse_leading_list_number(&point).unwrap_or((point_index + 1, point));
+        let (number, rest) = parse_leading_list_number(&point).unwrap_or((point_index + 1, point));
         return format!("{}. {}", number, rest);
     }
 
     normalize_render_text(&format!("{}{}", spec.marker, point))
 }
 
-fn point_text_lines(script: &Script, spec: &LayoutSpec, font: &FontArc, layout: &str, point_index: usize) -> Vec<String> {
+fn point_text_lines(
+    script: &Script,
+    spec: &LayoutSpec,
+    font: &FontArc,
+    layout: &str,
+    point_index: usize,
+) -> Vec<String> {
     let scale = PxScale::from(spec.point.font_size);
     let text = point_text(script, spec, layout, point_index);
     wrap_text(font, scale, &text, spec.point.width)
@@ -362,7 +822,13 @@ fn cta_position_y(
     desired_y.max(spec.cta.y).min(max_y)
 }
 
-fn point_position(script: &Script, spec: &LayoutSpec, font: &FontArc, layout: &str, point_index: usize) -> (f32, f32, String) {
+fn point_position(
+    script: &Script,
+    spec: &LayoutSpec,
+    font: &FontArc,
+    layout: &str,
+    point_index: usize,
+) -> (f32, f32, String) {
     let scale = PxScale::from(spec.point.font_size);
     let block_gap = (spec.point.font_size * 0.45).max(26.0);
 
@@ -393,7 +859,11 @@ fn point_position(script: &Script, spec: &LayoutSpec, font: &FontArc, layout: &s
             if point_index.is_multiple_of(2) {
                 (spec.point.x, left_y, spec.point.align.clone())
             } else {
-                (spec.point.x + column_gap, right_y + row_offset, spec.point.align.clone())
+                (
+                    spec.point.x + column_gap,
+                    right_y + row_offset,
+                    spec.point.align.clone(),
+                )
             }
         }
         _ => {
@@ -480,7 +950,15 @@ pub fn draw_text_lines(
         };
 
         // Draw drop shadow
-        draw_line_raw(img, font, scale, line, x + 3.0, cursor_y + 4.0, shadow_color);
+        draw_line_raw(
+            img,
+            font,
+            scale,
+            line,
+            x + 3.0,
+            cursor_y + 4.0,
+            shadow_color,
+        );
         // Draw main text
         draw_line_raw(img, font, scale, line, x, cursor_y, color);
 
@@ -528,10 +1006,21 @@ fn draw_line_raw(
                         let dst_a = pixel.0[3] as f32 / 255.0;
                         let out_a = a_f + dst_a * (1.0 - a_f);
                         if out_a > 0.0 {
-                            let out_r = (color.0[0] as f32 * a_f + pixel.0[0] as f32 * dst_a * (1.0 - a_f)) / out_a;
-                            let out_g = (color.0[1] as f32 * a_f + pixel.0[1] as f32 * dst_a * (1.0 - a_f)) / out_a;
-                            let out_b = (color.0[2] as f32 * a_f + pixel.0[2] as f32 * dst_a * (1.0 - a_f)) / out_a;
-                            *pixel = Rgba([out_r as u8, out_g as u8, out_b as u8, (out_a * 255.0) as u8]);
+                            let out_r = (color.0[0] as f32 * a_f
+                                + pixel.0[0] as f32 * dst_a * (1.0 - a_f))
+                                / out_a;
+                            let out_g = (color.0[1] as f32 * a_f
+                                + pixel.0[1] as f32 * dst_a * (1.0 - a_f))
+                                / out_a;
+                            let out_b = (color.0[2] as f32 * a_f
+                                + pixel.0[2] as f32 * dst_a * (1.0 - a_f))
+                                / out_a;
+                            *pixel = Rgba([
+                                out_r as u8,
+                                out_g as u8,
+                                out_b as u8,
+                                (out_a * 255.0) as u8,
+                            ]);
                         }
                     }
                 }
@@ -579,13 +1068,13 @@ pub fn make_overlay(
             Rgba([255, 255, 255, 255]),
             Rgba([0, 0, 0, 180]),
         );
-
     } else {
         let point_index = layer_index - 1;
         if point_index < script.points.len() {
             let scale = PxScale::from(spec.point.font_size);
             let lines = point_text_lines(script, &spec, font, &layout, point_index);
-            let (point_x, point_y, point_align) = point_position(script, &spec, font, &layout, point_index);
+            let (point_x, point_y, point_align) =
+                point_position(script, &spec, font, &layout, point_index);
             draw_text_lines(
                 &mut image,
                 font,
@@ -619,9 +1108,13 @@ pub fn make_overlay(
     }
 
     fs::create_dir_all(output_folder)?;
-    let file_name = format!("{}-{}-{}.png", slugify(&script.title), stamp, layer_index + 1);
+    let file_name = format!(
+        "{}-{}-{}.png",
+        slugify(&script.title),
+        stamp,
+        layer_index + 1
+    );
     let output_path = output_folder.join(file_name);
     image.save(&output_path).map_err(std::io::Error::other)?;
     Ok(output_path)
 }
-

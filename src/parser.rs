@@ -43,7 +43,6 @@ impl BlurStrength {
             _ => Self::None,
         }
     }
-
 }
 
 pub fn slugify(value: &str) -> String {
@@ -130,7 +129,11 @@ pub fn collapse_duplicate_title_point(script: &Script) -> Script {
 pub fn parse_scripts<P: AsRef<Path>>(path: P) -> Result<Vec<Script>, std::io::Error> {
     let content = fs::read_to_string(path)?;
     let block_re = Regex::new(r"(?m)^\s*---+\s*$").unwrap();
-    let blocks: Vec<&str> = block_re.split(&content).map(|b| b.trim()).filter(|b| !b.is_empty()).collect();
+    let blocks: Vec<&str> = block_re
+        .split(&content)
+        .map(|b| b.trim())
+        .filter(|b| !b.is_empty())
+        .collect();
 
     let mut scripts = Vec::new();
     for (i, block) in blocks.into_iter().enumerate() {

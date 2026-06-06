@@ -1,6 +1,7 @@
 use clap::Parser;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
+use rand::Rng;
 use rayon::prelude::*;
 use regex::Regex;
 use std::fs::OpenOptions;
@@ -14,11 +15,14 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use sysinfo::{get_current_pid, System};
 use walkdir::WalkDir;
 
-mod parser;
-mod overlay;
 mod ffmpeg;
+mod overlay;
+mod parser;
 
 const COMPLETION_LEDGER_PATH: &str = r"C:\Users\Administrator\OneDrive\Videos\fbfINAL\ALL.TXT";
+const MIN_REEL_DURATION: f32 = 10.0;
+const DEFAULT_REEL_DURATION: f32 = 12.0;
+const MAX_REEL_DURATION: f32 = 15.99;
 
 #[derive(Debug, Clone, Copy)]
 enum WorkerMode {
@@ -39,30 +43,58 @@ struct ResourceSnapshot {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "rust_reel_forge", version = "0.1.0", about = "Stunning 9:16 reels generator written in pure high-performance Rust")]
+#[command(
+    name = "rust_reel_forge",
+    version = "0.1.0",
+    about = "Stunning 9:16 reels generator written in pure high-performance Rust"
+)]
 struct Args {
     #[arg(long, help = "Path to the script file (txt format)")]
     script: Option<PathBuf>,
 
-    #[arg(long, default_value = "input/videos", help = "Folder containing background videos")]
+    #[arg(
+        long,
+        default_value = "input/videos",
+        help = "Folder containing background videos"
+    )]
     videos: PathBuf,
 
-    #[arg(long, default_value = "input/music", help = "Folder containing background music")]
+    #[arg(
+        long,
+        default_value = "input/music",
+        help = "Folder containing background music"
+    )]
     music: PathBuf,
 
-    #[arg(long, default_value = "output/videos", help = "Folder to save output MP4 videos")]
+    #[arg(
+        long,
+        default_value = "output/videos",
+        help = "Folder to save output MP4 videos"
+    )]
     output: PathBuf,
 
-    #[arg(long, default_value = "output/overlays", help = "Folder to save transparent text PNG overlays")]
+    #[arg(
+        long,
+        default_value = "output/overlays",
+        help = "Folder to save transparent text PNG overlays"
+    )]
     overlays: PathBuf,
 
-    #[arg(long, default_value_t = 12.5, help = "Default video duration in seconds")]
+    #[arg(long, default_value_t = DEFAULT_REEL_DURATION, help = "Default video duration in seconds; 12 uses a random 10.00-15.99 duration per reel")]
     duration: f32,
 
-    #[arg(long, default_value = "2", help = "Number of parallel workers for rendering, or 'auto'")]
+    #[arg(
+        long,
+        default_value = "2",
+        help = "Number of parallel workers for rendering, or 'auto'"
+    )]
     workers: String,
 
-    #[arg(long, default_value = "none", help = "Background blur strength: none, light, middle, heavy")]
+    #[arg(
+        long,
+        default_value = "none",
+        help = "Background blur strength: none, light, middle, heavy"
+    )]
     blur: String,
 }
 
@@ -117,6 +149,28 @@ fn auto_worker_limit(script_count: usize) -> usize {
     available.min(script_count.max(1))
 }
 
+fn clamp_reel_duration(value: f32) -> f32 {
+    value.clamp(MIN_REEL_DURATION, MAX_REEL_DURATION)
+}
+
+fn random_reel_duration() -> f32 {
+    let hundredths = thread_rng().gen_range(1000..=1599);
+    hundredths as f32 / 100.0
+}
+
+fn resolve_reel_duration(script_duration: Option<f32>, default_duration: f32) -> f32 {
+    if let Some(duration) = script_duration {
+        return clamp_reel_duration(duration);
+    }
+
+    let normalized_default = clamp_reel_duration(default_duration);
+    if (normalized_default - DEFAULT_REEL_DURATION).abs() < f32::EPSILON {
+        random_reel_duration()
+    } else {
+        normalized_default
+    }
+}
+
 fn spawn_resource_monitor(stop_flag: Arc<AtomicBool>) -> thread::JoinHandle<ResourceSnapshot> {
     thread::spawn(move || {
         let mut system = System::new_all();
@@ -161,14 +215,20 @@ fn collect_script_sources(script_path: &Path) -> Result<Vec<PathBuf>, String> {
     }
 
     if !script_path.is_dir() {
-        return Err(format!("Script path does not exist: {}", script_path.display()));
+        return Err(format!(
+            "Script path does not exist: {}",
+            script_path.display()
+        ));
     }
 
     let mut files = list_files_with_extensions(script_path, &["txt"]);
     files.sort_by(|left, right| natural_path_cmp(left, right));
 
     if files.is_empty() {
-        return Err(format!("No .txt script files found in {}", script_path.display()));
+        return Err(format!(
+            "No .txt script files found in {}",
+            script_path.display()
+        ));
     }
 
     Ok(files)
@@ -238,10 +298,21 @@ fn append_completion_ledger(script_file: &Path) -> Result<(), String> {
         .create(true)
         .append(true)
         .open(ledger_path)
-        .map_err(|e| format!("Failed to open completion ledger {}: {}", ledger_path.display(), e))?;
+        .map_err(|e| {
+            format!(
+                "Failed to open completion ledger {}: {}",
+                ledger_path.display(),
+                e
+            )
+        })?;
 
-    writeln!(file, "{}:{}", stem, week_name)
-        .map_err(|e| format!("Failed to append completion ledger {}: {}", ledger_path.display(), e))?;
+    writeln!(file, "{}:{}", stem, week_name).map_err(|e| {
+        format!(
+            "Failed to append completion ledger {}: {}",
+            ledger_path.display(),
+            e
+        )
+    })?;
 
     Ok(())
 }
@@ -289,7 +360,10 @@ where
 
     logger("Loading system font library...");
     let font = overlay::load_system_font();
-    logger(&format!("Spinning up worker pool ({} parallel workers)...", workers));
+    logger(&format!(
+        "Spinning up worker pool ({} parallel workers)...",
+        workers
+    ));
 
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(workers.max(1))
@@ -309,15 +383,12 @@ where
 
                 let script = parser::collapse_duplicate_title_point(script);
                 let stamp = get_millisecond_stamp();
-                let duration = script.duration.unwrap_or(default_duration).max(1.0);
+                let duration = resolve_reel_duration(script.duration, default_duration);
                 let script_number = global_start_index + index + 1;
 
                 logger(&format!(
                     "[Worker] Rendering script {}/{} from {}: \"{}\"",
-                    script_number,
-                    total_scripts,
-                    script_label,
-                    script.title
+                    script_number, total_scripts, script_label, script.title
                 ));
 
                 let mut overlay_paths = Vec::new();
@@ -332,14 +403,32 @@ where
                             return Err("Render stopped by user".to_string());
                         }
                     }
-                    match overlay::make_overlay(&script, point_index + 1, overlay_root, &stamp, &font) {
+                    match overlay::make_overlay(
+                        &script,
+                        point_index + 1,
+                        overlay_root,
+                        &stamp,
+                        &font,
+                    ) {
                         Ok(path) => overlay_paths.push(path),
-                        Err(e) => return Err(format!("Failed to make point overlay {}: {}", point_index + 1, e)),
+                        Err(e) => {
+                            return Err(format!(
+                                "Failed to make point overlay {}: {}",
+                                point_index + 1,
+                                e
+                            ))
+                        }
                     }
                 }
 
                 if !script.cta.is_empty() {
-                    match overlay::make_overlay(&script, script.points.len() + 1, overlay_root, &stamp, &font) {
+                    match overlay::make_overlay(
+                        &script,
+                        script.points.len() + 1,
+                        overlay_root,
+                        &stamp,
+                        &font,
+                    ) {
                         Ok(path) => overlay_paths.push(path),
                         Err(e) => return Err(format!("Failed to make CTA overlay: {}", e)),
                     }
@@ -426,7 +515,11 @@ where
                 match res {
                     Ok(path) => {
                         success_count += 1;
-                        logger(&format!("  Reel {}: {:?}", i + 1, path.file_name().unwrap()));
+                        logger(&format!(
+                            "  Reel {}: {:?}",
+                            i + 1,
+                            path.file_name().unwrap()
+                        ));
                     }
                     Err(e) => {
                         logger(&format!("  Reel {}: Error -> {}", i + 1, e));
@@ -435,7 +528,10 @@ where
             }
         }
         WorkerMode::Auto => {
-            logger(&format!("Blur mode: {} (auto workers)", blur_strength.as_str()));
+            logger(&format!(
+                "Blur mode: {} (auto workers)",
+                blur_strength.as_str()
+            ));
             let max_workers = auto_worker_limit(scripts.len());
             let locked_start = auto_worker_state
                 .as_ref()
@@ -462,7 +558,10 @@ where
                 }
 
                 let tuning = chosen_workers.is_none();
-                let workers = chosen_workers.unwrap_or(next_worker).min(scripts.len() - next_index).max(1);
+                let workers = chosen_workers
+                    .unwrap_or(next_worker)
+                    .min(scripts.len() - next_index)
+                    .max(1);
                 let chunk_size = auto_chunk_size(workers, scripts.len() - next_index, tuning);
                 logger(&format!(
                     "Auto thread pass: rendering reels {}-{} with {} workers...",
@@ -505,7 +604,11 @@ where
                             ));
                         }
                         Err(e) => {
-                            logger(&format!("  Reel {}: Error -> {}", next_index + offset + 1, e));
+                            logger(&format!(
+                                "  Reel {}: Error -> {}",
+                                next_index + offset + 1,
+                                e
+                            ));
                         }
                     }
                 }
@@ -555,7 +658,10 @@ where
                         ));
                     } else {
                         next_worker = (workers + 2).min(max_workers);
-                        logger(&format!("Auto thread increasing to {} workers for the next pass.", next_worker));
+                        logger(&format!(
+                            "Auto thread increasing to {} workers for the next pass.",
+                            next_worker
+                        ));
                     }
                 }
 
@@ -569,7 +675,11 @@ where
     logger("RENDERING DONE");
     logger("--------------------------------------------------");
     logger(&format!("Total elapsed time: {:.2?}", elapsed));
-    logger(&format!("Rendered {}/{} videos successfully.", success_count, scripts.len()));
+    logger(&format!(
+        "Rendered {}/{} videos successfully.",
+        success_count,
+        scripts.len()
+    ));
 
     Ok((success_count, scripts.len()))
 }
@@ -586,9 +696,18 @@ fn render_scripts_from_file(
     auto_worker_state: Option<&mut AutoWorkerState>,
     blur_strength: parser::BlurStrength,
 ) -> Result<(usize, usize), String> {
-    let scripts = parser::parse_scripts(script_path)
-        .map_err(|e| format!("Failed to parse script file {}: {}", script_path.display(), e))?;
-    println!("Loaded {} script(s) from {}", scripts.len(), script_path.display());
+    let scripts = parser::parse_scripts(script_path).map_err(|e| {
+        format!(
+            "Failed to parse script file {}: {}",
+            script_path.display(),
+            e
+        )
+    })?;
+    println!(
+        "Loaded {} script(s) from {}",
+        scripts.len(),
+        script_path.display()
+    );
 
     render_loaded_scripts(
         &scripts,
@@ -624,7 +743,11 @@ fn run_cli(args: Args) {
             std::process::exit(1);
         }
     };
-    println!("📝 Loaded {} script(s) from {:?}", scripts.len(), script_path);
+    println!(
+        "📝 Loaded {} script(s) from {:?}",
+        scripts.len(),
+        script_path
+    );
 
     let video_extensions = ["mp4", "mov", "mkv", "webm"];
     let audio_extensions = ["mp3", "wav", "m4a", "aac"];
@@ -658,7 +781,10 @@ fn run_cli(args: Args) {
     }
     .max(1)
     .min(scripts.len());
-    println!("🧵 Spinning up worker pool ({} parallel workers)...", workers);
+    println!(
+        "🧵 Spinning up worker pool ({} parallel workers)...",
+        workers
+    );
 
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(workers)
@@ -674,9 +800,14 @@ fn run_cli(args: Args) {
             .map(|(index, script)| {
                 let script = parser::collapse_duplicate_title_point(script);
                 let stamp = get_millisecond_stamp();
-                let duration = script.duration.unwrap_or(args.duration).max(1.0);
+                let duration = resolve_reel_duration(script.duration, args.duration);
 
-                println!("[Worker] Rendering script {}/{}: \"{}\"", index + 1, scripts.len(), script.title);
+                println!(
+                    "[Worker] Rendering script {}/{}: \"{}\"",
+                    index + 1,
+                    scripts.len(),
+                    script.title
+                );
 
                 let mut overlay_paths = Vec::new();
                 match overlay::make_overlay(&script, 0, &args.overlays, &stamp, &font) {
@@ -685,14 +816,32 @@ fn run_cli(args: Args) {
                 }
 
                 for point_index in 0..script.points.len() {
-                    match overlay::make_overlay(&script, point_index + 1, &args.overlays, &stamp, &font) {
+                    match overlay::make_overlay(
+                        &script,
+                        point_index + 1,
+                        &args.overlays,
+                        &stamp,
+                        &font,
+                    ) {
                         Ok(path) => overlay_paths.push(path),
-                        Err(e) => return Err(format!("Failed to make point overlay {}: {}", point_index + 1, e)),
+                        Err(e) => {
+                            return Err(format!(
+                                "Failed to make point overlay {}: {}",
+                                point_index + 1,
+                                e
+                            ))
+                        }
                     }
                 }
 
                 if !script.cta.is_empty() {
-                    match overlay::make_overlay(&script, script.points.len() + 1, &args.overlays, &stamp, &font) {
+                    match overlay::make_overlay(
+                        &script,
+                        script.points.len() + 1,
+                        &args.overlays,
+                        &stamp,
+                        &font,
+                    ) {
                         Ok(path) => overlay_paths.push(path),
                         Err(e) => return Err(format!("Failed to make CTA overlay: {}", e)),
                     }
@@ -735,9 +884,12 @@ fn run_cli(args: Args) {
             }
         }
     }
-    println!("📈 Rendered {}/{} videos successfully.", success_count, scripts.len());
+    println!(
+        "📈 Rendered {}/{} videos successfully.",
+        success_count,
+        scripts.len()
+    );
 }
-
 
 // --------------------------------------------------
 //               NATIVE RUST GUI MODE
@@ -827,7 +979,7 @@ impl Default for AppState {
                 output_folder: "output/videos".to_string(),
                 overlay_folder: "output/overlays".to_string(),
                 script_source: "".to_string(),
-                duration: "12.5".to_string(),
+                duration: DEFAULT_REEL_DURATION.to_string(),
                 workers: "auto".to_string(),
                 blur_strength: "none".to_string(),
                 script_text: "TITLE:Fast Rust UI\nPerfect native execution.\nPure C++ and Rust performance.\nCTA:Accelerate your workflow.".to_string(),
@@ -883,7 +1035,7 @@ impl ReelForgeApp {
         let output_dir = PathBuf::from(&self.state.output_folder);
         let overlay_dir = PathBuf::from(&self.state.overlay_folder);
 
-        let duration: f32 = self.state.duration.parse().unwrap_or(12.5);
+        let duration: f32 = self.state.duration.parse().unwrap_or(DEFAULT_REEL_DURATION);
         let workers: usize = self.state.workers.parse().unwrap_or(4);
         let worker_mode = parse_worker_mode(&self.state.workers);
         let blur_strength = parser::BlurStrength::from_str(&self.state.blur_strength);
@@ -946,7 +1098,11 @@ impl ReelForgeApp {
                     };
 
                     if batch_mode {
-                        log(&format!("Batch file {}/{}", file_index + 1, script_file_count));
+                        log(&format!(
+                            "Batch file {}/{}",
+                            file_index + 1,
+                            script_file_count
+                        ));
                     }
                     log(&format!("Script source: {}", script_file.display()));
                     log(&format!("Video output: {}", output_root.display()));
@@ -969,8 +1125,15 @@ impl ReelForgeApp {
                                 match append_completion_ledger(script_file) {
                                     Ok(()) => log(&format!(
                                         "Completion ledger updated: {}:{}",
-                                        script_file.file_stem().and_then(|name| name.to_str()).unwrap_or("scripts"),
-                                        script_file.parent().and_then(|parent| parent.file_name()).and_then(|name| name.to_str()).unwrap_or("root")
+                                        script_file
+                                            .file_stem()
+                                            .and_then(|name| name.to_str())
+                                            .unwrap_or("scripts"),
+                                        script_file
+                                            .parent()
+                                            .and_then(|parent| parent.file_name())
+                                            .and_then(|name| name.to_str())
+                                            .unwrap_or("root")
                                     )),
                                     Err(e) => log(&format!("⚠️ {}", e)),
                                 }
@@ -996,9 +1159,7 @@ impl ReelForgeApp {
                     log("==================================================");
                     log(&format!(
                         "Batch finished: rendered {}/{} reels across {} script file(s).",
-                        grand_total_success,
-                        grand_total_scripts,
-                        script_file_count
+                        grand_total_success, grand_total_scripts, script_file_count
                     ));
                 }
 
@@ -1020,7 +1181,10 @@ impl ReelForgeApp {
                     return;
                 }
             };
-            log(&format!("📝 Parsed {} scripts successfully.", scripts.len()));
+            log(&format!(
+                "📝 Parsed {} scripts successfully.",
+                scripts.len()
+            ));
 
             let video_extensions = ["mp4", "mov", "mkv", "webm"];
             let audio_extensions = ["mp3", "wav", "m4a", "aac"];
@@ -1046,7 +1210,10 @@ impl ReelForgeApp {
             let font = overlay::load_system_font();
 
             let active_workers = workers.max(1).min(scripts.len());
-            log(&format!("🧵 Spawning work pool with {} parallel workers...", active_workers));
+            log(&format!(
+                "🧵 Spawning work pool with {} parallel workers...",
+                active_workers
+            ));
 
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(active_workers)
@@ -1066,9 +1233,12 @@ impl ReelForgeApp {
 
                         let script = parser::collapse_duplicate_title_point(script);
                         let stamp = get_millisecond_stamp();
-                        let d = script.duration.unwrap_or(duration).max(1.0);
+                        let d = resolve_reel_duration(script.duration, duration);
 
-                        let _ = tx.send(format!("[Worker] Building text frames for Reel {}...", index + 1));
+                        let _ = tx.send(format!(
+                            "[Worker] Building text frames for Reel {}...",
+                            index + 1
+                        ));
 
                         let mut overlay_paths = Vec::new();
                         match overlay::make_overlay(&script, 0, &overlay_dir, &stamp, &font) {
@@ -1080,20 +1250,35 @@ impl ReelForgeApp {
                             if stop_requested.load(Ordering::Relaxed) {
                                 return Err("Render stopped by user".to_string());
                             }
-                            match overlay::make_overlay(&script, point_index + 1, &overlay_dir, &stamp, &font) {
+                            match overlay::make_overlay(
+                                &script,
+                                point_index + 1,
+                                &overlay_dir,
+                                &stamp,
+                                &font,
+                            ) {
                                 Ok(path) => overlay_paths.push(path),
                                 Err(e) => return Err(format!("Overlay point failed: {}", e)),
                             }
                         }
 
                         if !script.cta.is_empty() {
-                            match overlay::make_overlay(&script, script.points.len() + 1, &overlay_dir, &stamp, &font) {
+                            match overlay::make_overlay(
+                                &script,
+                                script.points.len() + 1,
+                                &overlay_dir,
+                                &stamp,
+                                &font,
+                            ) {
                                 Ok(path) => overlay_paths.push(path),
                                 Err(e) => return Err(format!("Overlay CTA failed: {}", e)),
                             }
                         }
 
-                        let _ = tx.send(format!("[Worker] Multiplexing FFmpeg render for Reel {}...", index + 1));
+                        let _ = tx.send(format!(
+                            "[Worker] Multiplexing FFmpeg render for Reel {}...",
+                            index + 1
+                        ));
                         match ffmpeg::render_video(
                             &script,
                             index,
@@ -1120,7 +1305,11 @@ impl ReelForgeApp {
 
             for (i, res) in outputs.iter().enumerate() {
                 match res {
-                    Ok(path) => log(&format!("  ✅ Reel {} generated: {:?}", i + 1, path.file_name().unwrap())),
+                    Ok(path) => log(&format!(
+                        "  ✅ Reel {} generated: {:?}",
+                        i + 1,
+                        path.file_name().unwrap()
+                    )),
                     Err(e) => log(&format!("  ❌ Reel {} failed: {}", i + 1, e)),
                 }
             }
@@ -1133,7 +1322,10 @@ impl ReelForgeApp {
     fn request_stop(&mut self) {
         self.state.stop_requested.store(true, Ordering::Relaxed);
         self.state.status_msg = "Stopping...".to_string();
-        self.add_log("Stop requested. Finishing active work and preventing new reels from starting.".to_string());
+        self.add_log(
+            "Stop requested. Finishing active work and preventing new reels from starting."
+                .to_string(),
+        );
     }
 }
 
@@ -1232,10 +1424,26 @@ impl eframe::App for ReelForgeApp {
                             egui::ComboBox::from_id_source("blur_strength")
                                 .selected_text(self.state.blur_strength.clone())
                                 .show_ui(ui, |ui| {
-                                    ui.selectable_value(&mut self.state.blur_strength, "none".to_string(), "none");
-                                    ui.selectable_value(&mut self.state.blur_strength, "light".to_string(), "light");
-                                    ui.selectable_value(&mut self.state.blur_strength, "middle".to_string(), "middle");
-                                    ui.selectable_value(&mut self.state.blur_strength, "heavy".to_string(), "heavy");
+                                    ui.selectable_value(
+                                        &mut self.state.blur_strength,
+                                        "none".to_string(),
+                                        "none",
+                                    );
+                                    ui.selectable_value(
+                                        &mut self.state.blur_strength,
+                                        "light".to_string(),
+                                        "light",
+                                    );
+                                    ui.selectable_value(
+                                        &mut self.state.blur_strength,
+                                        "middle".to_string(),
+                                        "middle",
+                                    );
+                                    ui.selectable_value(
+                                        &mut self.state.blur_strength,
+                                        "heavy".to_string(),
+                                        "heavy",
+                                    );
                                 });
                             ui.label("Background blur strength");
                             ui.end_row();
@@ -1288,11 +1496,20 @@ impl eframe::App for ReelForgeApp {
 
                 // Actions Layout
                 ui.horizontal(|ui| {
-                    if ui.add_enabled(!self.state.is_rendering, egui::Button::new("🚀 Start Native Render")).clicked() {
+                    if ui
+                        .add_enabled(
+                            !self.state.is_rendering,
+                            egui::Button::new("🚀 Start Native Render"),
+                        )
+                        .clicked()
+                    {
                         self.trigger_render();
                     }
 
-                    if ui.add_enabled(self.state.is_rendering, egui::Button::new("Stop")).clicked() {
+                    if ui
+                        .add_enabled(self.state.is_rendering, egui::Button::new("Stop"))
+                        .clicked()
+                    {
                         self.request_stop();
                     }
 
@@ -1347,7 +1564,10 @@ fn main() {
         } else {
             "Unknown error".to_string()
         };
-        let location = info.location().map(|loc| format!("at {}:{}", loc.file(), loc.line())).unwrap_or_default();
+        let location = info
+            .location()
+            .map(|loc| format!("at {}:{}", loc.file(), loc.line()))
+            .unwrap_or_default();
         let log_msg = format!("==================================================\n💥 RUST REEL FORGE CRASHED!\n==================================================\nError: {}\nLocation: {}\n\nIf you are on an RDP, it might be due to missing OpenGL hardware acceleration. Try configuring RDP hardware graphics or install standard Windows system fonts.\n", msg, location);
         let _ = std::fs::write("crash_log.txt", log_msg);
     }));
@@ -1393,14 +1613,8 @@ fn main() {
             };
 
             if batch_mode {
-                println!(
-                    "=================================================="
-                );
-                println!(
-                    "Batch file {}/{}",
-                    file_index + 1,
-                    script_file_count
-                );
+                println!("==================================================");
+                println!("Batch file {}/{}", file_index + 1, script_file_count);
             }
             println!("Script source: {}", script_file.display());
             println!("Video output: {}", output_root.display());
@@ -1425,8 +1639,15 @@ fn main() {
                         } else {
                             println!(
                                 "Completion ledger updated: {}:{}",
-                                script_file.file_stem().and_then(|name| name.to_str()).unwrap_or("scripts"),
-                                script_file.parent().and_then(|parent| parent.file_name()).and_then(|name| name.to_str()).unwrap_or("root")
+                                script_file
+                                    .file_stem()
+                                    .and_then(|name| name.to_str())
+                                    .unwrap_or("scripts"),
+                                script_file
+                                    .parent()
+                                    .and_then(|parent| parent.file_name())
+                                    .and_then(|name| name.to_str())
+                                    .unwrap_or("root")
                             );
                         }
                     }
@@ -1452,17 +1673,14 @@ fn main() {
             println!("==================================================");
             println!(
                 "Batch finished: rendered {}/{} reels across {} script file(s).",
-                grand_total_success,
-                grand_total_scripts,
-                script_file_count
+                grand_total_success, grand_total_scripts, script_file_count
             );
         }
     } else {
         // Run as pure-Rust native GUI!
         println!("🚀 Launching native Rust GUI...");
         let options = eframe::NativeOptions {
-            viewport: egui::ViewportBuilder::default()
-                .with_inner_size(egui::vec2(920.0, 700.0)), // Expanded size to fit beautiful two-column layout
+            viewport: egui::ViewportBuilder::default().with_inner_size(egui::vec2(920.0, 700.0)), // Expanded size to fit beautiful two-column layout
             renderer: eframe::Renderer::Glow,
             hardware_acceleration: eframe::HardwareAcceleration::Off,
             ..Default::default()

@@ -1,9 +1,9 @@
+use crate::overlay::{HEIGHT, WIDTH};
+use crate::parser::{BlurStrength, Script};
+use rand::Rng;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
-use rand::Rng;
-use crate::parser::{BlurStrength, Script};
-use crate::overlay::{WIDTH, HEIGHT};
 
 #[derive(Clone, Copy)]
 enum BackgroundVariant {
@@ -196,16 +196,11 @@ fn apply_background_treatment(base_chain: &mut String, treatment: BackgroundTrea
             let bottom_height = HEIGHT - split_y;
             base_chain.push_str(&format!(
                 ",drawbox=x=0:y=0:w={}:h={}:t=fill:color=black@{:.2}",
-                WIDTH,
-                split_y,
-                treatment.tint_opacity
+                WIDTH, split_y, treatment.tint_opacity
             ));
             base_chain.push_str(&format!(
                 ",drawbox=x=0:y={}:w={}:h={}:t=fill:color=black@{:.2}",
-                split_y,
-                WIDTH,
-                bottom_height,
-                treatment.secondary_tint_opacity
+                split_y, WIDTH, bottom_height, treatment.secondary_tint_opacity
             ));
         }
         BackgroundVariant::CardOverlay => {
@@ -273,7 +268,11 @@ fn probe_media_duration(path: &Path) -> Option<f32> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout.trim().parse::<f32>().ok().filter(|value| *value > 0.0)
+    stdout
+        .trim()
+        .parse::<f32>()
+        .ok()
+        .filter(|value| *value > 0.0)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -329,7 +328,10 @@ pub fn render_video(
         cmd.arg("-i").arg(v_path);
     } else {
         cmd.arg("-f").arg("lavfi");
-        cmd.arg("-i").arg(format!("color=c=black:s={}x{}:d={}", WIDTH, HEIGHT, effective_duration));
+        cmd.arg("-i").arg(format!(
+            "color=c=black:s={}x{}:d={}",
+            WIDTH, HEIGHT, effective_duration
+        ));
     }
 
     // Input 1..N: Overlay PNGs
@@ -386,10 +388,7 @@ pub fn render_video(
 
         // First layer (title) has no fade-in. Other layers have 0.1s soft fade-in.
         if i == 0 || script.all_at_once {
-            filters.push(format!(
-                "[{}:v]null[{}]",
-                overlay_input_index, faded_label
-            ));
+            filters.push(format!("[{}:v]null[{}]", overlay_input_index, faded_label));
         } else {
             filters.push(format!(
                 "[{}:v]fade=t=in:st={:.3}:d=0.1:alpha=1[{}]",
@@ -416,7 +415,7 @@ pub fn render_video(
     } else {
         current_input_label.clone()
     };
-    
+
     cmd.arg("-filter_complex").arg(filters.join(";"));
     cmd.arg("-map").arg(last_bg_label);
 
@@ -436,7 +435,11 @@ pub fn render_video(
     cmd.arg("-t").arg(effective_duration.to_string());
 
     std::fs::create_dir_all(output_folder)?;
-    let safe_title = crate::parser::slugify(if !script.code.is_empty() { &script.code } else { &script.title });
+    let safe_title = crate::parser::slugify(if !script.code.is_empty() {
+        &script.code
+    } else {
+        &script.title
+    });
     let output_path = output_folder.join(format!("{}.mp4", safe_title));
     cmd.arg(&output_path);
 
@@ -451,9 +454,7 @@ pub fn render_video(
     }
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(std::io::Error::other(
-            format!("FFmpeg failed: {}", stderr),
-        ));
+        return Err(std::io::Error::other(format!("FFmpeg failed: {}", stderr)));
     }
 
     Ok(output_path)
