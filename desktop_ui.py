@@ -46,6 +46,7 @@ class RustReelForgeDesktop(tk.Tk):
         self.music_folder = tk.StringVar(value=str(DEFAULT_MUSIC.resolve()))
         self.output_folder = tk.StringVar(value=str(DEFAULT_OUTPUT.resolve()))
         self.overlay_folder = tk.StringVar(value=str(DEFAULT_OVERLAYS.resolve()))
+        self.error_log_path = tk.StringVar(value="")
         self.script_source = tk.StringVar(value="")
         self.duration = tk.StringVar(value="12")
         self.workers = tk.StringVar(value="auto")
@@ -88,6 +89,7 @@ class RustReelForgeDesktop(tk.Tk):
         self._folder_row(folders, 1, "Music", self.music_folder)
         self._folder_row(folders, 2, "Output", self.output_folder)
         self._folder_row(folders, 3, "Overlays", self.overlay_folder)
+        self._file_row(folders, 4, "Error File", self.error_log_path)
 
         # Render options
         options = ttk.LabelFrame(left, text="Performance Controls", padding=10)
@@ -186,10 +188,25 @@ class RustReelForgeDesktop(tk.Tk):
         ttk.Entry(parent, textvariable=variable).grid(row=row, column=1, sticky="ew", padx=8, pady=3)
         ttk.Button(parent, text="Browse", command=lambda: self.pick_folder(variable)).grid(row=row, column=2, pady=3)
 
+    def _file_row(self, parent: ttk.Frame, row: int, label: str, variable: tk.StringVar) -> None:
+        ttk.Label(parent, text=label, width=10).grid(row=row, column=0, sticky="w", pady=3)
+        ttk.Entry(parent, textvariable=variable).grid(row=row, column=1, sticky="ew", padx=8, pady=3)
+        ttk.Button(parent, text="Browse", command=lambda: self.pick_file(variable)).grid(row=row, column=2, pady=3)
+
     def pick_folder(self, variable: tk.StringVar) -> None:
         folder = filedialog.askdirectory(initialdir=variable.get() or str(ROOT))
         if folder:
             variable.set(Path(folder).resolve())
+            self.save_state()
+
+    def pick_file(self, variable: tk.StringVar) -> None:
+        file_path = filedialog.asksaveasfilename(
+            initialdir=str(ROOT),
+            initialfile=Path(variable.get()).name if variable.get() else "failed_scripts.txt",
+            filetypes=[("Text files", "*.txt"), ("Log files", "*.log"), ("All files", "*.*")],
+        )
+        if file_path:
+            variable.set(str(Path(file_path).resolve()))
             self.save_state()
 
     def load_script(self) -> None:
@@ -236,6 +253,7 @@ class RustReelForgeDesktop(tk.Tk):
             "music_folder": self.music_folder.get(),
             "output_folder": self.output_folder.get(),
             "overlay_folder": self.overlay_folder.get(),
+            "error_log_path": self.error_log_path.get(),
             "script_source": self.script_source.get(),
             "duration": self.duration.get(),
             "workers": self.normalized_workers(),
@@ -276,6 +294,7 @@ class RustReelForgeDesktop(tk.Tk):
         self.music_folder.set(state.get("music_folder", self.music_folder.get()))
         self.output_folder.set(state.get("output_folder", self.output_folder.get()))
         self.overlay_folder.set(state.get("overlay_folder", self.overlay_folder.get()))
+        self.error_log_path.set(state.get("error_log_path", self.error_log_path.get()))
         self.script_source.set(state.get("script_source", self.script_source.get()))
         self.duration.set(state.get("duration", self.duration.get()))
         saved_workers = (state.get("workers", self.workers.get()) or "auto").strip() or "auto"
@@ -463,6 +482,8 @@ class RustReelForgeDesktop(tk.Tk):
             "--workers", self.normalized_workers(),
             "--blur", self.blur_strength.get(),
         ])
+        if self.error_log_path.get().strip():
+            cmd.extend(["--error-log", self.error_log_path.get().strip()])
         return cmd
 
     def start_render(self) -> None:

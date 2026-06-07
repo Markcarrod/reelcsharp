@@ -99,6 +99,12 @@ struct Args {
     )]
     blur: String,
 
+    #[arg(
+        long,
+        help = "Optional file to append failed script file names and error details"
+    )]
+    error_log: Option<PathBuf>,
+
     #[arg(long, hide = true)]
     batch_child: bool,
 }
@@ -286,6 +292,24 @@ fn completion_ledger_label(script_file: &Path) -> String {
     )
 }
 
+fn append_error_record(error_log_path: Option<&Path>, script_file: &Path, message: &str) {
+    let Some(error_log_path) = error_log_path else {
+        return;
+    };
+
+    if let Some(parent) = error_log_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    if let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(error_log_path)
+    {
+        let _ = writeln!(file, "{} | {}", script_file.display(), message);
+    }
+}
+
 fn parse_summary_line(line: &str) -> Option<(usize, usize)> {
     let payload = line
         .strip_prefix(FILE_SUMMARY_MARKER)?
@@ -305,6 +329,7 @@ fn spawn_batch_child_process(
     default_duration: f32,
     workers: &str,
     blur: &str,
+    error_log_path: Option<&Path>,
 ) -> Result<Command, String> {
     let current_exe = std::env::current_exe()
         .map_err(|e| format!("Failed to locate current executable for batch child: {}", e))?;
@@ -326,9 +351,11 @@ fn spawn_batch_child_process(
         .arg(workers)
         .arg("--blur")
         .arg(blur)
-        .arg("--batch-child")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .arg("--batch-child");
+    if let Some(error_log_path) = error_log_path {
+        command.arg("--error-log").arg(error_log_path);
+    }
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
     Ok(command)
 }
 
@@ -341,6 +368,7 @@ fn run_script_file_in_child_process<F>(
     default_duration: f32,
     workers: &str,
     blur: &str,
+    error_log_path: Option<&Path>,
     stop_requested: Option<&AtomicBool>,
     logger: &F,
 ) -> Result<SubprocessRenderResult, String>
@@ -356,6 +384,7 @@ where
         default_duration,
         workers,
         blur,
+        error_log_path,
     )?
     .spawn()
     .map_err(|e| {
@@ -434,6 +463,10 @@ where
 
                 summary.fully_successful = status.success();
                 if status.success() {
+                    return Ok(summary);
+                }
+
+                if summary.total_count > 0 || summary.success_count > 0 {
                     return Ok(summary);
                 }
 
@@ -1129,6 +1162,8 @@ struct SavedConfig {
     output_folder: String,
     overlay_folder: String,
     #[serde(default)]
+    error_log_path: String,
+    #[serde(default)]
     script_source: String,
     duration: String,
     workers: String,
@@ -1168,6 +1203,7 @@ struct AppState {
     music_folder: String,
     output_folder: String,
     overlay_folder: String,
+    error_log_path: String,
     script_source: String,
     duration: String,
     workers: String,
@@ -1188,6 +1224,7 @@ impl Default for AppState {
                 music_folder: saved.music_folder,
                 output_folder: saved.output_folder,
                 overlay_folder: saved.overlay_folder,
+                error_log_path: saved.error_log_path,
                 script_source: saved.script_source,
                 duration: saved.duration,
                 workers: saved.workers,
@@ -1206,6 +1243,7 @@ impl Default for AppState {
                 music_folder: "input/music".to_string(),
                 output_folder: "output/videos".to_string(),
                 overlay_folder: "output/overlays".to_string(),
+                error_log_path: "".to_string(),
                 script_source: "".to_string(),
                 duration: DEFAULT_REEL_DURATION.to_string(),
                 workers: "auto".to_string(),
@@ -1245,6 +1283,7 @@ impl ReelForgeApp {
             music_folder: self.state.music_folder.clone(),
             output_folder: self.state.output_folder.clone(),
             overlay_folder: self.state.overlay_folder.clone(),
+            error_log_path: self.state.error_log_path.clone(),
             script_source: self.state.script_source.clone(),
             duration: self.state.duration.clone(),
             workers: self.state.workers.clone(),
@@ -1262,6 +1301,10 @@ impl ReelForgeApp {
         let music_dir = PathBuf::from(&self.state.music_folder);
         let output_dir = PathBuf::from(&self.state.output_folder);
         let overlay_dir = PathBuf::from(&self.state.overlay_folder);
+        let error_log_path = {
+            let value = self.state.error_log_path.trim();
+            (!value.is_empty()).then(|| PathBuf::from(value))
+        };
 
         let duration: f32 = self.state.duration.parse().unwrap_or(DEFAULT_REEL_DURATION);
         let workers: usize = self.state.workers.parse().unwrap_or(4);
@@ -1335,6 +1378,7 @@ impl ReelForgeApp {
                             duration,
                             &workers_setting,
                             blur_strength.as_str(),
+                            error_log_path.as_deref(),
                             Some(stop_requested.as_ref()),
                             &log,
                         )
@@ -1363,6 +1407,16 @@ impl ReelForgeApp {
                         Ok(summary) => {
                             grand_total_success += summary.success_count;
                             grand_total_scripts += summary.total_count;
+                            if !summary.fully_successful {
+                                append_error_record(
+                                    error_log_path.as_deref(),
+                                    script_file,
+                                    &format!(
+                                        "Partial failure: {}/{} reels succeeded",
+                                        summary.success_count, summary.total_count
+                                    ),
+                                );
+                            }
                             if summary.fully_successful && !batch_mode {
                                 match append_completion_ledger(script_file) {
                                     Ok(()) => log(&format!(
@@ -1385,6 +1439,7 @@ impl ReelForgeApp {
                         }
                         Err(e) => {
                             log(&format!("❌ {}", e));
+                            append_error_record(error_log_path.as_deref(), script_file, &e);
                             if batch_mode {
                                 log(&format!(
                                     "Skipping failed batch file and continuing to the next .txt: {}",
@@ -1650,6 +1705,21 @@ impl eframe::App for ReelForgeApp {
                             }
                             ui.end_row();
 
+                            ui.label("Error File:");
+                            ui.text_edit_singleline(&mut self.state.error_log_path);
+                            ui.horizontal(|ui| {
+                                if ui.button("File...").clicked() {
+                                    if let Some(path) = rfd::FileDialog::new().save_file() {
+                                        self.state.error_log_path =
+                                            path.to_string_lossy().to_string();
+                                    }
+                                }
+                                if ui.button("Clear").clicked() {
+                                    self.state.error_log_path.clear();
+                                }
+                            });
+                            ui.end_row();
+
                             ui.label("Duration (sec):");
                             ui.text_edit_singleline(&mut self.state.duration);
                             ui.label("(12.0 - 13.0)");
@@ -1856,6 +1926,14 @@ fn main() {
             if success_count == total_count && total_count > 0 {
                 std::process::exit(0);
             }
+            append_error_record(
+                args.error_log.as_deref(),
+                script_path,
+                &format!(
+                    "Partial failure: {}/{} reels succeeded",
+                    success_count, total_count
+                ),
+            );
             std::process::exit(2);
         }
 
@@ -1895,6 +1973,7 @@ fn main() {
                     args.duration,
                     &args.workers,
                     blur_strength.as_str(),
+                    args.error_log.as_deref(),
                     None,
                     &|message| println!("{}", message),
                 )
@@ -1921,6 +2000,16 @@ fn main() {
                 Ok(summary) => {
                     grand_total_success += summary.success_count;
                     grand_total_scripts += summary.total_count;
+                    if !summary.fully_successful {
+                        append_error_record(
+                            args.error_log.as_deref(),
+                            script_file,
+                            &format!(
+                                "Partial failure: {}/{} reels succeeded",
+                                summary.success_count, summary.total_count
+                            ),
+                        );
+                    }
                     if summary.fully_successful && !batch_mode {
                         if let Err(e) = append_completion_ledger(script_file) {
                             eprintln!("{}", e);
@@ -1944,6 +2033,7 @@ fn main() {
                 }
                 Err(e) => {
                     eprintln!("{}", e);
+                    append_error_record(args.error_log.as_deref(), script_file, &e);
                     if batch_mode {
                         eprintln!(
                             "Skipping failed batch file and continuing to the next .txt: {}",
