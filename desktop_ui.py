@@ -47,6 +47,7 @@ class RustReelForgeDesktop(tk.Tk):
         self.output_folder = tk.StringVar(value=str(DEFAULT_OUTPUT.resolve()))
         self.overlay_folder = tk.StringVar(value=str(DEFAULT_OVERLAYS.resolve()))
         self.error_log_path = tk.StringVar(value="")
+        self.timing_log_path = tk.StringVar(value="")
         self.script_source = tk.StringVar(value="")
         self.duration = tk.StringVar(value="12")
         self.workers = tk.StringVar(value="auto")
@@ -90,6 +91,7 @@ class RustReelForgeDesktop(tk.Tk):
         self._folder_row(folders, 2, "Output", self.output_folder)
         self._folder_row(folders, 3, "Overlays", self.overlay_folder)
         self._file_row(folders, 4, "Error File", self.error_log_path)
+        self._file_row(folders, 5, "Timing File", self.timing_log_path)
 
         # Render options
         options = ttk.LabelFrame(left, text="Performance Controls", padding=10)
@@ -254,6 +256,7 @@ class RustReelForgeDesktop(tk.Tk):
             "output_folder": self.output_folder.get(),
             "overlay_folder": self.overlay_folder.get(),
             "error_log_path": self.error_log_path.get(),
+            "timing_log_path": self.timing_log_path.get(),
             "script_source": self.script_source.get(),
             "duration": self.duration.get(),
             "workers": self.normalized_workers(),
@@ -295,6 +298,7 @@ class RustReelForgeDesktop(tk.Tk):
         self.output_folder.set(state.get("output_folder", self.output_folder.get()))
         self.overlay_folder.set(state.get("overlay_folder", self.overlay_folder.get()))
         self.error_log_path.set(state.get("error_log_path", self.error_log_path.get()))
+        self.timing_log_path.set(state.get("timing_log_path", self.timing_log_path.get()))
         self.script_source.set(state.get("script_source", self.script_source.get()))
         self.duration.set(state.get("duration", self.duration.get()))
         saved_workers = (state.get("workers", self.workers.get()) or "auto").strip() or "auto"
@@ -457,7 +461,7 @@ class RustReelForgeDesktop(tk.Tk):
         finally:
             ctypes.windll.kernel32.CloseHandle(handle)
 
-    def runner_supports_error_log(self, command: list[str]) -> bool:
+    def runner_supports_flags(self, command: list[str], flags: list[str]) -> bool:
         try:
             result = subprocess.run(
                 [*command, "--help"],
@@ -469,13 +473,17 @@ class RustReelForgeDesktop(tk.Tk):
         except OSError:
             return False
         help_text = f"{result.stdout}\n{result.stderr}"
-        return "--error-log" in help_text
+        return all(flag in help_text for flag in flags)
 
     def get_rust_runner_command(self, script_path: Path) -> list[str]:
         # Path to precompiled release binary
         exe_path = ROOT / "target" / "release" / "rust_reel_forge.exe"
         debug_exe_path = ROOT / "target" / "debug" / "rust_reel_forge.exe"
-        wants_error_log = bool(self.error_log_path.get().strip())
+        required_flags: list[str] = []
+        if self.error_log_path.get().strip():
+            required_flags.append("--error-log")
+        if self.timing_log_path.get().strip():
+            required_flags.append("--timing-log")
 
         # Prefer the fastest compatible runner.
         candidates: list[list[str]] = []
@@ -487,7 +495,7 @@ class RustReelForgeDesktop(tk.Tk):
 
         cmd: list[str] | None = None
         for candidate in candidates:
-            if wants_error_log and not self.runner_supports_error_log(candidate):
+            if required_flags and not self.runner_supports_flags(candidate, required_flags):
                 continue
             cmd = candidate
             break
@@ -508,6 +516,8 @@ class RustReelForgeDesktop(tk.Tk):
         ])
         if self.error_log_path.get().strip():
             cmd.extend(["--error-log", self.error_log_path.get().strip()])
+        if self.timing_log_path.get().strip():
+            cmd.extend(["--timing-log", self.timing_log_path.get().strip()])
         return cmd
 
     def start_render(self) -> None:

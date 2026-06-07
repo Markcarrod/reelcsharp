@@ -1,3 +1,4 @@
+use chrono::Local;
 use clap::Parser;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
@@ -104,6 +105,12 @@ struct Args {
         help = "Optional file to append failed script file names and error details"
     )]
     error_log: Option<PathBuf>,
+
+    #[arg(
+        long,
+        help = "Optional file to append completed script file timings as name:time"
+    )]
+    timing_log: Option<PathBuf>,
 
     #[arg(long, hide = true)]
     batch_child: bool,
@@ -315,6 +322,29 @@ fn append_error_record(error_log_path: Option<&Path>, script_file: &Path, messag
         .open(error_log_path)
     {
         let _ = writeln!(file, "{} | {}", script_file.display(), message);
+    }
+}
+
+fn append_timing_record(timing_log_path: Option<&Path>, script_file: &Path) {
+    let Some(timing_log_path) = timing_log_path else {
+        return;
+    };
+
+    if let Some(parent) = timing_log_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    if let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(timing_log_path)
+    {
+        let label = script_file
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .unwrap_or("scripts");
+        let finished_at = Local::now().format("%Y-%m-%d %H:%M:%S");
+        let _ = writeln!(file, "{}:{}", label, finished_at);
     }
 }
 
@@ -1182,6 +1212,8 @@ struct SavedConfig {
     #[serde(default)]
     error_log_path: String,
     #[serde(default)]
+    timing_log_path: String,
+    #[serde(default)]
     script_source: String,
     duration: String,
     workers: String,
@@ -1222,6 +1254,7 @@ struct AppState {
     output_folder: String,
     overlay_folder: String,
     error_log_path: String,
+    timing_log_path: String,
     script_source: String,
     duration: String,
     workers: String,
@@ -1243,6 +1276,7 @@ impl Default for AppState {
                 output_folder: saved.output_folder,
                 overlay_folder: saved.overlay_folder,
                 error_log_path: saved.error_log_path,
+                timing_log_path: saved.timing_log_path,
                 script_source: saved.script_source,
                 duration: saved.duration,
                 workers: saved.workers,
@@ -1262,6 +1296,7 @@ impl Default for AppState {
                 output_folder: "output/videos".to_string(),
                 overlay_folder: "output/overlays".to_string(),
                 error_log_path: "".to_string(),
+                timing_log_path: "".to_string(),
                 script_source: "".to_string(),
                 duration: DEFAULT_REEL_DURATION.to_string(),
                 workers: "auto".to_string(),
@@ -1302,6 +1337,7 @@ impl ReelForgeApp {
             output_folder: self.state.output_folder.clone(),
             overlay_folder: self.state.overlay_folder.clone(),
             error_log_path: self.state.error_log_path.clone(),
+            timing_log_path: self.state.timing_log_path.clone(),
             script_source: self.state.script_source.clone(),
             duration: self.state.duration.clone(),
             workers: self.state.workers.clone(),
@@ -1321,6 +1357,10 @@ impl ReelForgeApp {
         let overlay_dir = PathBuf::from(&self.state.overlay_folder);
         let error_log_path = {
             let value = self.state.error_log_path.trim();
+            (!value.is_empty()).then(|| PathBuf::from(value))
+        };
+        let timing_log_path = {
+            let value = self.state.timing_log_path.trim();
             (!value.is_empty()).then(|| PathBuf::from(value))
         };
 
@@ -1384,7 +1424,6 @@ impl ReelForgeApp {
                     }
                     log(&format!("Script source: {}", script_file.display()));
                     log(&format!("Video output: {}", output_root.display()));
-
                     let render_result = if batch_mode {
                         log("Supervisor mode: isolated child process enabled for this batch file.");
                         run_script_file_in_child_process(
@@ -1466,6 +1505,7 @@ impl ReelForgeApp {
                             }
                         }
                     }
+                    append_timing_record(timing_log_path.as_deref(), script_file);
                 }
 
                 if batch_mode {
@@ -1741,6 +1781,21 @@ impl eframe::App for ReelForgeApp {
                                 }
                                 if ui.button("Clear").clicked() {
                                     self.state.error_log_path.clear();
+                                }
+                            });
+                            ui.end_row();
+
+                            ui.label("Timing File:");
+                            ui.text_edit_singleline(&mut self.state.timing_log_path);
+                            ui.horizontal(|ui| {
+                                if ui.button("File...").clicked() {
+                                    if let Some(path) = rfd::FileDialog::new().save_file() {
+                                        self.state.timing_log_path =
+                                            path.to_string_lossy().to_string();
+                                    }
+                                }
+                                if ui.button("Clear").clicked() {
+                                    self.state.timing_log_path.clear();
                                 }
                             });
                             ui.end_row();
@@ -2069,6 +2124,8 @@ fn main() {
                     std::process::exit(1);
                 }
             }
+
+            append_timing_record(args.timing_log.as_deref(), script_file);
         }
 
         if batch_mode {
