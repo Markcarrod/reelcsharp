@@ -5,8 +5,9 @@ use rand::Rng;
 use rayon::prelude::*;
 use regex::Regex;
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::{Arc, Mutex};
@@ -23,6 +24,7 @@ const COMPLETION_LEDGER_PATH: &str = r"C:\Users\Administrator\OneDrive\Videos\fb
 const MIN_REEL_DURATION: f32 = 10.0;
 const DEFAULT_REEL_DURATION: f32 = 12.0;
 const MAX_REEL_DURATION: f32 = 15.99;
+const FILE_SUMMARY_MARKER: &str = "__FILE_SUMMARY__";
 
 #[derive(Debug, Clone, Copy)]
 enum WorkerMode {
@@ -96,6 +98,16 @@ struct Args {
         help = "Background blur strength: none, light, middle, heavy"
     )]
     blur: String,
+
+    #[arg(long, hide = true)]
+    batch_child: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct SubprocessRenderResult {
+    success_count: usize,
+    total_count: usize,
+    fully_successful: bool,
 }
 
 fn list_files_with_extensions(folder: &Path, extensions: &[&str]) -> Vec<PathBuf> {
@@ -232,6 +244,222 @@ fn collect_script_sources(script_path: &Path) -> Result<Vec<PathBuf>, String> {
     }
 
     Ok(files)
+}
+
+fn script_output_roots(
+    script_file: &Path,
+    batch_mode: bool,
+    output_root: &Path,
+    overlay_root: &Path,
+) -> (PathBuf, PathBuf) {
+    let stem = script_file
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("scripts");
+
+    let video_output = if batch_mode {
+        output_root.join(parser::slugify(stem))
+    } else {
+        output_root.to_path_buf()
+    };
+    let overlay_output = if batch_mode {
+        overlay_root.join(parser::slugify(stem))
+    } else {
+        overlay_root.to_path_buf()
+    };
+
+    (video_output, overlay_output)
+}
+
+fn completion_ledger_label(script_file: &Path) -> String {
+    format!(
+        "{}:{}",
+        script_file
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .unwrap_or("scripts"),
+        script_file
+            .parent()
+            .and_then(|parent| parent.file_name())
+            .and_then(|name| name.to_str())
+            .unwrap_or("root")
+    )
+}
+
+fn parse_summary_line(line: &str) -> Option<(usize, usize)> {
+    let payload = line
+        .strip_prefix(FILE_SUMMARY_MARKER)?
+        .trim_start_matches(':');
+    let mut parts = payload.split(':');
+    let success_count = parts.next()?.trim().parse().ok()?;
+    let total_count = parts.next()?.trim().parse().ok()?;
+    Some((success_count, total_count))
+}
+
+fn spawn_batch_child_process(
+    script_file: &Path,
+    video_root: &Path,
+    music_root: &Path,
+    output_root: &Path,
+    overlay_root: &Path,
+    default_duration: f32,
+    workers: &str,
+    blur: &str,
+) -> Result<Command, String> {
+    let current_exe = std::env::current_exe()
+        .map_err(|e| format!("Failed to locate current executable for batch child: {}", e))?;
+    let mut command = Command::new(current_exe);
+    command
+        .arg("--script")
+        .arg(script_file)
+        .arg("--videos")
+        .arg(video_root)
+        .arg("--music")
+        .arg(music_root)
+        .arg("--output")
+        .arg(output_root)
+        .arg("--overlays")
+        .arg(overlay_root)
+        .arg("--duration")
+        .arg(default_duration.to_string())
+        .arg("--workers")
+        .arg(workers)
+        .arg("--blur")
+        .arg(blur)
+        .arg("--batch-child")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    Ok(command)
+}
+
+fn run_script_file_in_child_process<F>(
+    script_file: &Path,
+    video_root: &Path,
+    music_root: &Path,
+    output_root: &Path,
+    overlay_root: &Path,
+    default_duration: f32,
+    workers: &str,
+    blur: &str,
+    stop_requested: Option<&AtomicBool>,
+    logger: &F,
+) -> Result<SubprocessRenderResult, String>
+where
+    F: Fn(&str),
+{
+    let mut child = spawn_batch_child_process(
+        script_file,
+        video_root,
+        music_root,
+        output_root,
+        overlay_root,
+        default_duration,
+        workers,
+        blur,
+    )?
+    .spawn()
+    .map_err(|e| {
+        format!(
+            "Failed to launch child renderer for {}: {}",
+            script_file.display(),
+            e
+        )
+    })?;
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Failed to capture child stdout".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "Failed to capture child stderr".to_string())?;
+
+    let (line_tx, line_rx) = channel::<String>();
+
+    let stdout_tx = line_tx.clone();
+    let stdout_thread = thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            let _ = stdout_tx.send(line);
+        }
+    });
+
+    let stderr_tx = line_tx.clone();
+    let stderr_thread = thread::spawn(move || {
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            let _ = stderr_tx.send(line);
+        }
+    });
+    drop(line_tx);
+
+    let mut summary = SubprocessRenderResult::default();
+
+    loop {
+        while let Ok(line) = line_rx.try_recv() {
+            if let Some((success_count, total_count)) = parse_summary_line(&line) {
+                summary.success_count = success_count;
+                summary.total_count = total_count;
+                continue;
+            }
+            logger(&line);
+        }
+
+        if let Some(flag) = stop_requested {
+            if flag.load(Ordering::Relaxed) {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout_thread.join();
+                let _ = stderr_thread.join();
+                while let Ok(line) = line_rx.try_recv() {
+                    if parse_summary_line(&line).is_none() {
+                        logger(&line);
+                    }
+                }
+                return Err("Render stopped by user".to_string());
+            }
+        }
+
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let _ = stdout_thread.join();
+                let _ = stderr_thread.join();
+                while let Ok(line) = line_rx.try_recv() {
+                    if let Some((success_count, total_count)) = parse_summary_line(&line) {
+                        summary.success_count = success_count;
+                        summary.total_count = total_count;
+                    } else {
+                        logger(&line);
+                    }
+                }
+
+                summary.fully_successful = status.success();
+                if status.success() {
+                    return Ok(summary);
+                }
+
+                let code_label = status
+                    .code()
+                    .map(|code| code.to_string())
+                    .unwrap_or_else(|| "terminated by signal".to_string());
+                return Err(format!(
+                    "Child renderer failed for {} with exit code {}.",
+                    script_file.display(),
+                    code_label
+                ));
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(150)),
+            Err(e) => {
+                let _ = child.kill();
+                let _ = stdout_thread.join();
+                let _ = stderr_thread.join();
+                return Err(format!(
+                    "Failed while waiting for child renderer {}: {}",
+                    script_file.display(),
+                    e
+                ));
+            }
+        }
+    }
 }
 
 fn natural_path_cmp(left: &Path, right: &Path) -> std::cmp::Ordering {
@@ -1037,6 +1265,7 @@ impl ReelForgeApp {
 
         let duration: f32 = self.state.duration.parse().unwrap_or(DEFAULT_REEL_DURATION);
         let workers: usize = self.state.workers.parse().unwrap_or(4);
+        let workers_setting = self.state.workers.clone();
         let worker_mode = parse_worker_mode(&self.state.workers);
         let blur_strength = parser::BlurStrength::from_str(&self.state.blur_strength);
         let script_source = self.state.script_source.trim().to_string();
@@ -1082,20 +1311,8 @@ impl ReelForgeApp {
                         break;
                     }
 
-                    let stem = script_file
-                        .file_stem()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or("scripts");
-                    let output_root = if batch_mode {
-                        output_dir.join(parser::slugify(stem))
-                    } else {
-                        output_dir.clone()
-                    };
-                    let overlay_root = if batch_mode {
-                        overlay_dir.join(parser::slugify(stem))
-                    } else {
-                        overlay_dir.clone()
-                    };
+                    let (output_root, overlay_root) =
+                        script_output_roots(script_file, batch_mode, &output_dir, &overlay_dir);
 
                     if batch_mode {
                         log(&format!(
@@ -1107,33 +1324,50 @@ impl ReelForgeApp {
                     log(&format!("Script source: {}", script_file.display()));
                     log(&format!("Video output: {}", output_root.display()));
 
-                    match render_scripts_from_file(
-                        script_file,
-                        &video_dir,
-                        &music_dir,
-                        &output_root,
-                        &overlay_root,
-                        duration,
-                        worker_mode,
-                        Some(&mut auto_worker_state),
-                        blur_strength,
-                    ) {
-                        Ok((success_count, total_count)) => {
-                            grand_total_success += success_count;
-                            grand_total_scripts += total_count;
-                            if success_count == total_count && total_count > 0 {
+                    let render_result = if batch_mode {
+                        log("Supervisor mode: isolated child process enabled for this batch file.");
+                        run_script_file_in_child_process(
+                            script_file,
+                            &video_dir,
+                            &music_dir,
+                            &output_root,
+                            &overlay_root,
+                            duration,
+                            &workers_setting,
+                            blur_strength.as_str(),
+                            Some(stop_requested.as_ref()),
+                            &log,
+                        )
+                    } else {
+                        render_scripts_from_file(
+                            script_file,
+                            &video_dir,
+                            &music_dir,
+                            &output_root,
+                            &overlay_root,
+                            duration,
+                            worker_mode,
+                            Some(&mut auto_worker_state),
+                            blur_strength,
+                        )
+                        .map(|(success_count, total_count)| {
+                            SubprocessRenderResult {
+                                success_count,
+                                total_count,
+                                fully_successful: success_count == total_count && total_count > 0,
+                            }
+                        })
+                    };
+
+                    match render_result {
+                        Ok(summary) => {
+                            grand_total_success += summary.success_count;
+                            grand_total_scripts += summary.total_count;
+                            if summary.fully_successful && !batch_mode {
                                 match append_completion_ledger(script_file) {
                                     Ok(()) => log(&format!(
-                                        "Completion ledger updated: {}:{}",
-                                        script_file
-                                            .file_stem()
-                                            .and_then(|name| name.to_str())
-                                            .unwrap_or("scripts"),
-                                        script_file
-                                            .parent()
-                                            .and_then(|parent| parent.file_name())
-                                            .and_then(|name| name.to_str())
-                                            .unwrap_or("root")
+                                        "Completion ledger updated: {}",
+                                        completion_ledger_label(script_file)
                                     )),
                                     Err(e) => log(&format!("⚠️ {}", e)),
                                 }
@@ -1144,13 +1378,19 @@ impl ReelForgeApp {
                                     file_index + 1,
                                     script_file_count,
                                     script_file.display(),
-                                    success_count,
-                                    total_count
+                                    summary.success_count,
+                                    summary.total_count
                                 ));
                             }
                         }
                         Err(e) => {
                             log(&format!("❌ {}", e));
+                            if batch_mode {
+                                log(&format!(
+                                    "Skipping failed batch file and continuing to the next .txt: {}",
+                                    script_file.display()
+                                ));
+                            }
                         }
                     }
                 }
@@ -1582,6 +1822,43 @@ fn main() {
         println!("        RUST REEL FORGE - INITIALIZING         ");
         println!("--------------------------------------------------");
 
+        if args.batch_child {
+            let (success_count, total_count) = match render_scripts_from_file(
+                script_path,
+                &args.videos,
+                &args.music,
+                &args.output,
+                &args.overlays,
+                args.duration,
+                worker_mode,
+                Some(&mut AutoWorkerState::default()),
+                blur_strength,
+            ) {
+                Ok(summary) => summary,
+                Err(e) => {
+                    eprintln!("{}", e);
+                    std::process::exit(1);
+                }
+            };
+
+            if success_count == total_count && total_count > 0 {
+                if let Err(e) = append_completion_ledger(script_path) {
+                    eprintln!("{}", e);
+                } else {
+                    println!(
+                        "Completion ledger updated: {}",
+                        completion_ledger_label(script_path)
+                    );
+                }
+            }
+
+            println!("{FILE_SUMMARY_MARKER}:{success_count}:{total_count}");
+            if success_count == total_count && total_count > 0 {
+                std::process::exit(0);
+            }
+            std::process::exit(2);
+        }
+
         let script_sources = match collect_script_sources(script_path) {
             Ok(files) => files,
             Err(e) => {
@@ -1597,20 +1874,8 @@ fn main() {
         let mut auto_worker_state = AutoWorkerState::default();
 
         for (file_index, script_file) in script_sources.iter().enumerate() {
-            let stem = script_file
-                .file_stem()
-                .and_then(|name| name.to_str())
-                .unwrap_or("scripts");
-            let output_root = if batch_mode {
-                args.output.join(parser::slugify(stem))
-            } else {
-                args.output.clone()
-            };
-            let overlay_root = if batch_mode {
-                args.overlays.join(parser::slugify(stem))
-            } else {
-                args.overlays.clone()
-            };
+            let (output_root, overlay_root) =
+                script_output_roots(script_file, batch_mode, &args.output, &args.overlays);
 
             if batch_mode {
                 println!("==================================================");
@@ -1619,35 +1884,50 @@ fn main() {
             println!("Script source: {}", script_file.display());
             println!("Video output: {}", output_root.display());
 
-            match render_scripts_from_file(
-                script_file,
-                &args.videos,
-                &args.music,
-                &output_root,
-                &overlay_root,
-                args.duration,
-                worker_mode,
-                Some(&mut auto_worker_state),
-                blur_strength,
-            ) {
-                Ok((success_count, total_count)) => {
-                    grand_total_success += success_count;
-                    grand_total_scripts += total_count;
-                    if success_count == total_count && total_count > 0 {
+            let render_result = if batch_mode {
+                println!("Supervisor mode: isolated child process enabled for this batch file.");
+                run_script_file_in_child_process(
+                    script_file,
+                    &args.videos,
+                    &args.music,
+                    &output_root,
+                    &overlay_root,
+                    args.duration,
+                    &args.workers,
+                    blur_strength.as_str(),
+                    None,
+                    &|message| println!("{}", message),
+                )
+            } else {
+                render_scripts_from_file(
+                    script_file,
+                    &args.videos,
+                    &args.music,
+                    &output_root,
+                    &overlay_root,
+                    args.duration,
+                    worker_mode,
+                    Some(&mut auto_worker_state),
+                    blur_strength,
+                )
+                .map(|(success_count, total_count)| SubprocessRenderResult {
+                    success_count,
+                    total_count,
+                    fully_successful: success_count == total_count && total_count > 0,
+                })
+            };
+
+            match render_result {
+                Ok(summary) => {
+                    grand_total_success += summary.success_count;
+                    grand_total_scripts += summary.total_count;
+                    if summary.fully_successful && !batch_mode {
                         if let Err(e) = append_completion_ledger(script_file) {
                             eprintln!("{}", e);
                         } else {
                             println!(
-                                "Completion ledger updated: {}:{}",
-                                script_file
-                                    .file_stem()
-                                    .and_then(|name| name.to_str())
-                                    .unwrap_or("scripts"),
-                                script_file
-                                    .parent()
-                                    .and_then(|parent| parent.file_name())
-                                    .and_then(|name| name.to_str())
-                                    .unwrap_or("root")
+                                "Completion ledger updated: {}",
+                                completion_ledger_label(script_file)
                             );
                         }
                     }
@@ -1657,13 +1937,20 @@ fn main() {
                             file_index + 1,
                             script_file_count,
                             script_file.display(),
-                            success_count,
-                            total_count
+                            summary.success_count,
+                            summary.total_count
                         );
                     }
                 }
                 Err(e) => {
                     eprintln!("{}", e);
+                    if batch_mode {
+                        eprintln!(
+                            "Skipping failed batch file and continuing to the next .txt: {}",
+                            script_file.display()
+                        );
+                        continue;
+                    }
                     std::process::exit(1);
                 }
             }
