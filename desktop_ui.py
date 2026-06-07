@@ -457,18 +457,42 @@ class RustReelForgeDesktop(tk.Tk):
         finally:
             ctypes.windll.kernel32.CloseHandle(handle)
 
+    def runner_supports_error_log(self, command: list[str]) -> bool:
+        try:
+            result = subprocess.run(
+                [*command, "--help"],
+                capture_output=True,
+                text=True,
+                check=False,
+                cwd=ROOT,
+            )
+        except OSError:
+            return False
+        help_text = f"{result.stdout}\n{result.stderr}"
+        return "--error-log" in help_text
+
     def get_rust_runner_command(self, script_path: Path) -> list[str]:
         # Path to precompiled release binary
         exe_path = ROOT / "target" / "release" / "rust_reel_forge.exe"
         debug_exe_path = ROOT / "target" / "debug" / "rust_reel_forge.exe"
+        wants_error_log = bool(self.error_log_path.get().strip())
 
-        # Check for precompiled release binaries first for maximum speed
+        # Prefer the fastest compatible runner.
+        candidates: list[list[str]] = []
         if exe_path.exists():
-            cmd = [str(exe_path)]
-        elif debug_exe_path.exists():
-            cmd = [str(debug_exe_path)]
-        else:
-            # Fallback to direct Cargo invocation
+            candidates.append([str(exe_path)])
+        if debug_exe_path.exists():
+            candidates.append([str(debug_exe_path)])
+        candidates.append(["cargo", "run", "--release", "--"])
+
+        cmd: list[str] | None = None
+        for candidate in candidates:
+            if wants_error_log and not self.runner_supports_error_log(candidate):
+                continue
+            cmd = candidate
+            break
+
+        if cmd is None:
             cmd = ["cargo", "run", "--release", "--"]
 
         # Append CLI arguments

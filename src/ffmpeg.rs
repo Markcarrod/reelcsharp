@@ -284,6 +284,7 @@ pub fn render_video(
     output_folder: &Path,
     overlay_paths: &[PathBuf],
     duration: f32,
+    ffmpeg_threads: usize,
     blur_strength: BlurStrength,
     _stamp: &str,
     stop_requested: Option<&AtomicBool>,
@@ -428,6 +429,7 @@ pub fn render_video(
     }
 
     // Output settings
+    cmd.arg("-threads").arg(ffmpeg_threads.max(1).to_string());
     cmd.arg("-c:v").arg("libx264");
     cmd.arg("-preset").arg("veryfast");
     cmd.arg("-pix_fmt").arg("yuv420p");

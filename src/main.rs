@@ -167,6 +167,14 @@ fn auto_worker_limit(script_count: usize) -> usize {
     available.min(script_count.max(1))
 }
 
+fn ffmpeg_threads_for_workers(workers: usize) -> usize {
+    let cpu_budget = thread::available_parallelism()
+        .map(|value| value.get())
+        .unwrap_or(4)
+        .max(1);
+    (cpu_budget / workers.max(1)).clamp(1, 4)
+}
+
 fn clamp_reel_duration(value: f32) -> f32 {
     value.clamp(MIN_REEL_DURATION, MAX_REEL_DURATION)
 }
@@ -599,6 +607,7 @@ where
 {
     let video_extensions = ["mp4", "mov", "mkv", "webm"];
     let audio_extensions = ["mp3", "wav", "m4a", "aac"];
+    let ffmpeg_threads = ffmpeg_threads_for_workers(workers);
 
     let mut videos = list_files_with_extensions(video_root, &video_extensions);
     let mut music_files = list_files_with_extensions(music_root, &audio_extensions);
@@ -624,6 +633,10 @@ where
     logger(&format!(
         "Spinning up worker pool ({} parallel workers)...",
         workers
+    ));
+    logger(&format!(
+        "FFmpeg thread budget per worker: {}",
+        ffmpeg_threads
     ));
 
     let pool = rayon::ThreadPoolBuilder::new()
@@ -703,6 +716,7 @@ where
                     output_root,
                     &overlay_paths,
                     duration,
+                    ffmpeg_threads,
                     blur_strength,
                     &stamp,
                     stop_requested,
@@ -1042,10 +1056,13 @@ fn run_cli(args: Args) {
     }
     .max(1)
     .min(scripts.len());
+    let ffmpeg_threads = ffmpeg_threads_for_workers(workers);
     println!(
         "🧵 Spinning up worker pool ({} parallel workers)...",
         workers
     );
+
+    println!("FFmpeg thread budget per worker: {}", ffmpeg_threads);
 
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(workers)
@@ -1116,6 +1133,7 @@ fn run_cli(args: Args) {
                     &args.output,
                     &overlay_paths,
                     duration,
+                    ffmpeg_threads,
                     blur_strength,
                     &stamp,
                     None,
@@ -1505,9 +1523,15 @@ impl ReelForgeApp {
             let font = overlay::load_system_font();
 
             let active_workers = workers.max(1).min(scripts.len());
+            let ffmpeg_threads = ffmpeg_threads_for_workers(active_workers);
             log(&format!(
                 "🧵 Spawning work pool with {} parallel workers...",
                 active_workers
+            ));
+
+            log(&format!(
+                "FFmpeg thread budget per worker: {}",
+                ffmpeg_threads
             ));
 
             let pool = rayon::ThreadPoolBuilder::new()
@@ -1582,6 +1606,7 @@ impl ReelForgeApp {
                             &output_dir,
                             &overlay_paths,
                             d,
+                            ffmpeg_threads,
                             blur_strength,
                             &stamp,
                             Some(stop_requested.as_ref()),
