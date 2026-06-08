@@ -1277,7 +1277,7 @@ internal sealed class ReelForgeForm : Form
         Controls.Add(root);
 
         var left = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 5 };
-        left.RowStyles.Add(new RowStyle(SizeType.Absolute, 230));
+        left.RowStyles.Add(new RowStyle(SizeType.Absolute, 270));
         left.RowStyles.Add(new RowStyle(SizeType.Absolute, 82));
         left.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         left.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
