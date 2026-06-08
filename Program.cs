@@ -618,6 +618,7 @@ internal static class Renderer
     public const float DefaultReelDuration = 12.0f;
     public const float MaxReelDuration = 15.99f;
     private static readonly Random Random = new();
+    private static readonly object TimingFileLock = new();
 
     public static RenderSummary RenderSource(RenderOptions options, CancellationToken cancellationToken, Action<string> log)
     {
@@ -625,13 +626,21 @@ internal static class Renderer
         var batchMode = Directory.Exists(options.ScriptPath);
         var grandSuccess = 0;
         var grandTotal = 0;
+        var batchStartedAt = Stopwatch.StartNew();
+
+        AppendTimingLine(options.TimingLogPath, $"START BATCH | {DateTime.Now:yyyy-MM-dd HH:mm:ss} | files={scriptSources.Count} | source={options.ScriptPath}");
 
         for (var i = 0; i < scriptSources.Count; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var scriptFile = scriptSources[i];
+            var scriptFileStartedAt = Stopwatch.StartNew();
             var outputRoot = batchMode ? Path.Combine(options.OutputFolder, ScriptParser.Slugify(Path.GetFileNameWithoutExtension(scriptFile))) : options.OutputFolder;
             var overlayRoot = batchMode ? Path.Combine(options.OverlayFolder, ScriptParser.Slugify(Path.GetFileNameWithoutExtension(scriptFile))) : options.OverlayFolder;
+            var summary = new RenderSummary(0, 0);
+            var status = "DONE";
+            var errorMessage = "";
+            var shouldRethrow = false;
 
             if (batchMode)
             {
@@ -639,14 +648,16 @@ internal static class Renderer
             }
             log($"Script source: {scriptFile}");
             log($"Video output: {outputRoot}");
+            AppendTimingLine(options.TimingLogPath, $"START SCRIPT FILE | {DateTime.Now:yyyy-MM-dd HH:mm:ss} | {i + 1}/{scriptSources.Count} | {Path.GetFileName(scriptFile)}");
 
             try
             {
-                var summary = RenderScriptFile(options with { ScriptPath = scriptFile, OutputFolder = outputRoot, OverlayFolder = overlayRoot }, cancellationToken, log);
+                summary = RenderScriptFile(options with { ScriptPath = scriptFile, OutputFolder = outputRoot, OverlayFolder = overlayRoot }, cancellationToken, log);
                 grandSuccess += summary.SuccessCount;
                 grandTotal += summary.TotalCount;
                 if (!summary.FullySuccessful)
                 {
+                    status = "PARTIAL";
                     AppendError(options.ErrorLogPath, scriptFile, $"Partial failure: {summary.SuccessCount}/{summary.TotalCount} reels succeeded");
                 }
                 else
@@ -661,15 +672,31 @@ internal static class Renderer
             }
             catch (Exception ex)
             {
+                status = "ERROR";
+                errorMessage = ex.Message;
                 AppendError(options.ErrorLogPath, scriptFile, ex.Message);
                 log($"Error: {ex.Message}");
                 if (!batchMode)
                 {
-                    throw;
+                    shouldRethrow = true;
                 }
             }
 
-            AppendTiming(options.TimingLogPath, scriptFile);
+            var completedFiles = i + 1;
+            var fileElapsed = scriptFileStartedAt.Elapsed;
+            var averageMinutesPerFile = batchStartedAt.Elapsed.TotalMinutes / Math.Max(completedFiles, 1);
+            var remaining = TimeSpan.FromMinutes(Math.Max(scriptSources.Count - completedFiles, 0) * averageMinutesPerFile);
+            var timingLine = $"SCRIPT FILE {completedFiles}/{scriptSources.Count} | {status} | {Path.GetFileName(scriptFile)} | file_elapsed={FormatDuration(fileElapsed)} | avg_min_per_file={averageMinutesPerFile:0.00} | eta={FormatDuration(remaining)} | reels={summary.SuccessCount}/{summary.TotalCount}";
+            if (!string.IsNullOrWhiteSpace(errorMessage))
+            {
+                timingLine += $" | error={errorMessage}";
+            }
+            log($"[Timing] {timingLine}");
+            AppendTimingLine(options.TimingLogPath, timingLine);
+            if (shouldRethrow)
+            {
+                throw new InvalidOperationException(errorMessage);
+            }
         }
 
         if (batchMode)
@@ -678,6 +705,7 @@ internal static class Renderer
             log($"Batch finished: rendered {grandSuccess}/{grandTotal} reels across {scriptSources.Count} script file(s).");
         }
 
+        AppendTimingLine(options.TimingLogPath, $"END BATCH | {DateTime.Now:yyyy-MM-dd HH:mm:ss} | rendered={grandSuccess}/{grandTotal} | total_elapsed={FormatDuration(batchStartedAt.Elapsed)}");
         return new RenderSummary(grandSuccess, grandTotal);
     }
 
@@ -832,7 +860,7 @@ internal static class Renderer
         File.AppendAllText(errorLogPath, $"{scriptFile} | {message}{Environment.NewLine}", Encoding.UTF8);
     }
 
-    private static void AppendTiming(string? timingLogPath, string scriptFile)
+    private static void AppendTimingLine(string? timingLogPath, string message)
     {
         if (string.IsNullOrWhiteSpace(timingLogPath))
         {
@@ -844,8 +872,17 @@ internal static class Renderer
         {
             Directory.CreateDirectory(parent);
         }
-        File.AppendAllText(timingLogPath, $"{Path.GetFileNameWithoutExtension(scriptFile)}:{DateTime.Now:yyyy-MM-dd HH:mm:ss}{Environment.NewLine}", Encoding.UTF8);
+
+        lock (TimingFileLock)
+        {
+            File.AppendAllText(timingLogPath, message + Environment.NewLine, Encoding.UTF8);
+        }
     }
+
+    private static string FormatDuration(TimeSpan value) =>
+        value.TotalHours >= 1
+            ? $"{(int)value.TotalHours}:{value.Minutes:00}:{value.Seconds:00}"
+            : $"{value.Minutes:00}:{value.Seconds:00}";
 
     private static void AppendCompletionLedger(string scriptFile, Action<string> log)
     {
@@ -1261,7 +1298,7 @@ internal sealed class ReelForgeForm : Form
         AddPathRow(folderGrid, 2, "Output", _outputFolder, PickFolder);
         AddPathRow(folderGrid, 3, "Overlays", _overlayFolder, PickFolder);
         AddPathRow(folderGrid, 4, "Error File", _errorLogPath, PickFile);
-        AddPathRow(folderGrid, 5, "Timing File", _timingLogPath, PickFile);
+        AddPathRow(folderGrid, 5, "Timing File", _timingLogPath, PickTimingFile);
 
         var options = Group("Performance Controls");
         left.Controls.Add(options, 0, 1);
@@ -1361,6 +1398,21 @@ internal sealed class ReelForgeForm : Form
     private void PickFile(TextBox target)
     {
         using var dialog = new SaveFileDialog { InitialDirectory = AppPaths.Root, FileName = string.IsNullOrWhiteSpace(target.Text) ? "failed_scripts.txt" : Path.GetFileName(target.Text), Filter = "Text files|*.txt|Log files|*.log|All files|*.*" };
+        if (dialog.ShowDialog(this) == DialogResult.OK)
+        {
+            target.Text = dialog.FileName;
+            SaveState();
+        }
+    }
+
+    private void PickTimingFile(TextBox target)
+    {
+        using var dialog = new SaveFileDialog
+        {
+            InitialDirectory = AppPaths.Root,
+            FileName = string.IsNullOrWhiteSpace(target.Text) ? "reel_timing.txt" : Path.GetFileName(target.Text),
+            Filter = "Text files|*.txt|Log files|*.log|All files|*.*"
+        };
         if (dialog.ShowDialog(this) == DialogResult.OK)
         {
             target.Text = dialog.FileName;
