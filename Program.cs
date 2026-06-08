@@ -1212,11 +1212,11 @@ internal sealed class ReelForgeForm : Form
     private readonly ComboBox _blur = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly TextBox _scriptSource = new();
     private readonly TextBox _scriptText = new() { Multiline = true, ScrollBars = ScrollBars.Vertical, WordWrap = true, Font = new Font("Consolas", 10) };
-    private readonly TextBox _log = new() { Multiline = true, ScrollBars = ScrollBars.Vertical, ReadOnly = true, Font = new Font("Consolas", 9) };
+    private readonly TextBox _log = new() { Multiline = true, ScrollBars = ScrollBars.Vertical, ReadOnly = true, Font = new Font("Consolas", 9), Dock = DockStyle.Fill };
     private readonly Label _status = new() { Text = "Ready", AutoSize = true, Font = new Font("Segoe UI", 10, FontStyle.Bold), ForeColor = Color.FromArgb(0, 180, 100) };
     private readonly ProgressBar _progress = new() { Minimum = 0, Maximum = 1 };
     private readonly Label _progressText = new() { Text = "", AutoSize = true };
-    private readonly PictureBox _preview = new() { SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Black };
+    private readonly PictureBox _preview = new() { SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Black, Dock = DockStyle.Fill };
     private CancellationTokenSource? _renderCts;
     private string _lastManualWorkers = "4";
 
@@ -1505,6 +1505,14 @@ internal sealed class ReelForgeForm : Form
     private void Log(string message)
     {
         _log.AppendText(message + Environment.NewLine);
+        try
+        {
+            File.AppendAllText(Path.Combine(AppPaths.Root, "reel_forge.log"), message + Environment.NewLine, Encoding.UTF8);
+        }
+        catch
+        {
+            // UI logging should never fail just because the file log is unavailable.
+        }
     }
 
     private void UpdatePreview()
