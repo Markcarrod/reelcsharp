@@ -1271,8 +1271,10 @@ internal static class Renderer
 
         var workers = ParseWorkers(options.Workers, scripts.Count);
         var ffmpegThreads = FfmpegThreadsForWorkers(workers);
+        var ffmpegPreset = FfmpegPresetForWorkers(workers);
         log($"Spinning up worker pool ({workers} parallel workers)...");
         log($"FFmpeg thread budget per worker: {ffmpegThreads}");
+        log($"FFmpeg preset: {ffmpegPreset}");
 
         var success = 0;
         var startedAt = Stopwatch.StartNew();
@@ -1300,7 +1302,7 @@ internal static class Renderer
                     overlays.Add(OverlayRenderer.MakeOverlay(script, script.Points.Count + 1, options.OverlayFolder, stamp));
                 }
 
-                var output = FfmpegRenderer.RenderVideo(script, item.index, videos, music, options.OutputFolder, overlays, duration, ffmpegThreads, options.Blur, options.NoAudio, cancellationToken);
+                var output = FfmpegRenderer.RenderVideo(script, item.index, videos, music, options.OutputFolder, overlays, duration, ffmpegThreads, ffmpegPreset, options.Blur, options.NoAudio, cancellationToken);
                 Interlocked.Increment(ref success);
                 results.Add((item.index, output, null));
             }
@@ -1372,7 +1374,10 @@ internal static class Renderer
         return int.TryParse(value, out var fixedWorkers) ? Math.Max(1, Math.Min(fixedWorkers, Math.Max(1, scriptCount))) : Math.Min(4, Math.Max(1, scriptCount));
     }
 
-    private static int FfmpegThreadsForWorkers(int workers) => Math.Clamp(Math.Max(1, Environment.ProcessorCount) / Math.Max(1, workers), 1, 4);
+    private static int FfmpegThreadsForWorkers(int workers) =>
+        workers >= 8 ? 1 : Math.Clamp(Math.Max(1, Environment.ProcessorCount) / Math.Max(1, workers), 1, 3);
+
+    private static string FfmpegPresetForWorkers(int workers) => workers >= 8 ? "ultrafast" : workers >= 4 ? "superfast" : "veryfast";
 
     private sealed record DurationRange(float Min, float Max);
 
@@ -1509,7 +1514,7 @@ internal static class FfmpegRenderer
     private sealed record BlurBand(int SigmaMin, int SigmaMax, int TintMin, int TintMax);
     private static readonly Random Random = new();
 
-    public static string RenderVideo(ReelScript script, int index, IReadOnlyList<string> videos, IReadOnlyList<string> musicFiles, string outputFolder, IReadOnlyList<string> overlayPaths, float duration, int ffmpegThreads, BlurStrength blurStrength, bool noAudio, CancellationToken cancellationToken)
+    public static string RenderVideo(ReelScript script, int index, IReadOnlyList<string> videos, IReadOnlyList<string> musicFiles, string outputFolder, IReadOnlyList<string> overlayPaths, float duration, int ffmpegThreads, string ffmpegPreset, BlurStrength blurStrength, bool noAudio, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var videoPath = script.Video ?? (videos.Count > 0 ? videos[index % videos.Count] : null);
@@ -1518,7 +1523,7 @@ internal static class FfmpegRenderer
         var effectiveDuration = Math.Max(duration, (revealStarts.LastOrDefault() + 2f));
         var treatment = ChooseTreatment(blurStrength);
 
-        var args = new List<string> { "-y" };
+        var args = new List<string> { "-y", "-hide_banner" };
         if (videoPath is not null)
         {
             args.AddRange(["-stream_loop", "-1", "-i", videoPath]);
@@ -1570,7 +1575,7 @@ internal static class FfmpegRenderer
         }
 
         var lastVideo = overlayPaths.Count == 0 ? "[bg]" : current;
-        args.AddRange(["-filter_complex", string.Join(";", filters), "-map", lastVideo]);
+        args.AddRange(["-filter_threads", "1", "-filter_complex_threads", "1", "-filter_complex", string.Join(";", filters), "-map", lastVideo]);
         if (musicPath is not null)
         {
             args.AddRange(["-map", $"{overlayPaths.Count + 1}:a?", "-c:a", "aac", "-shortest"]);
@@ -1579,7 +1584,7 @@ internal static class FfmpegRenderer
         Directory.CreateDirectory(outputFolder);
         var safeTitle = ScriptParser.Slugify(script.Code.Length > 0 ? script.Code : script.Title);
         var outputPath = Path.Combine(outputFolder, $"{safeTitle}.mp4");
-        args.AddRange(["-threads", Math.Max(1, ffmpegThreads).ToString(), "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-t", effectiveDuration.ToString("0.###"), outputPath]);
+        args.AddRange(["-threads", Math.Max(1, ffmpegThreads).ToString(), "-c:v", "libx264", "-preset", ffmpegPreset, "-tune", "fastdecode", "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-t", effectiveDuration.ToString("0.###"), outputPath]);
 
         var result = RunProcess("ffmpeg", args, cancellationToken);
         if (result.ExitCode != 0)
