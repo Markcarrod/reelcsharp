@@ -303,12 +303,14 @@ internal static partial class ScriptParser
     private static string NormalizeInputPath(string path)
     {
         var trimmed = path.Trim().Trim('"');
-        if (Regex.IsMatch(trimmed, @"^/home/kayan/", RegexOptions.IgnoreCase))
+        if (OperatingSystem.IsWindows() && Regex.IsMatch(trimmed, @"^/home/kayan/", RegexOptions.IgnoreCase))
         {
             return Path.Combine(@"C:\Users\kayan", trimmed["/home/kayan/".Length..].Replace('/', Path.DirectorySeparatorChar));
         }
 
-        var mntMatch = Regex.Match(trimmed, @"^/mnt/([a-z])/(.+)$", RegexOptions.IgnoreCase);
+        var mntMatch = OperatingSystem.IsWindows()
+            ? Regex.Match(trimmed, @"^/mnt/([a-z])/(.+)$", RegexOptions.IgnoreCase)
+            : Match.Empty;
         if (mntMatch.Success)
         {
             return $"{mntMatch.Groups[1].Value.ToUpperInvariant()}:\\{mntMatch.Groups[2].Value.Replace('/', Path.DirectorySeparatorChar)}";
@@ -1301,6 +1303,7 @@ internal static class Renderer
             }
             catch (Exception ex)
             {
+                log($"[Worker] Error script {item.index + 1}/{scripts.Count}: {ex.Message}");
                 results.Add((item.index, null, ex.Message));
             }
         });
