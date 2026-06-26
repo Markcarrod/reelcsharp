@@ -21,3 +21,13 @@ dotnet run --project .\ReelForgeCSharp.csproj -- --script .\input\scripts\exampl
 ```
 
 Saved desktop settings live at `config/desktop_state.json`.
+
+## Pipe Row Scripts
+
+You can also load a `.txt` where each line is one reel:
+
+```text
+niche|Title|Line 1|Line 2|Line 3|||Duration:14 seconds|outputcode
+```
+
+The first field is treated as a style/niche label, the second field becomes the title, the middle fields become reel lines, `Duration:...` sets the reel duration, and the final field is used as the output code. Pipe-row reels automatically rotate through each visual layout one by one and loop back to the first layout after the full list is used.

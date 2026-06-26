@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -22,7 +23,15 @@ internal static class Program
             {
                 try
                 {
-                    Console.OutputEncoding = Encoding.UTF8;
+                    try
+                    {
+                        Console.OutputEncoding = Encoding.UTF8;
+                    }
+                    catch (IOException)
+                    {
+                        // Some hosts do not expose a writable console handle.
+                    }
+
                     return Cli.Run(args);
                 }
                 catch (Exception ex)
@@ -95,6 +104,7 @@ internal sealed class ReelScript
     public int CtaPauseCountBefore { get; set; }
     public string Cta { get; set; } = "";
     public string Code { get; set; } = "";
+    public string Niche { get; set; } = "";
     public float? Duration { get; set; }
     public string Layout { get; set; } = "center_stack";
     public bool AllAtOnce { get; set; }
@@ -105,9 +115,41 @@ internal sealed class ReelScript
 
 internal static partial class ScriptParser
 {
+    private static readonly string[] PipeRowLayoutRotation =
+    [
+        "center_stack",
+        "left_stack",
+        "right_stack",
+        "top_bottom",
+        "one_word_hook",
+        "quote_style",
+        "story_block",
+        "progress_reveal",
+        "center_card",
+        "two_column_split",
+        "grid_layout",
+        "masonry_layout",
+        "hero_list",
+        "alternating_rows",
+        "sidebar_layout",
+        "collage_layout",
+        "auto_fit_tiles",
+        "tabbed_layout",
+        "magazine_layout",
+        "template_rotation_layout",
+        "priority_based_layout",
+        "adaptive_smart_layout",
+        "fallback_universal_layout"
+    ];
+
     public static List<ReelScript> ParseFile(string path)
     {
         var content = File.ReadAllText(path, Encoding.UTF8);
+        if (LooksLikePipeRows(content))
+        {
+            return ParsePipeRows(content);
+        }
+
         var blocks = Regex.Split(content, @"(?m)^\s*---+\s*$")
             .Select(b => b.Trim())
             .Where(b => b.Length > 0)
@@ -120,6 +162,144 @@ internal static partial class ScriptParser
         }
 
         return scripts;
+    }
+
+    private static bool LooksLikePipeRows(string content)
+    {
+        var rows = content.Split(["\r\n", "\n"], StringSplitOptions.None)
+            .Select(line => line.Trim().TrimStart('\ufeff').Trim())
+            .Where(line => line.Length > 0 && !Regex.IsMatch(line, @"^\s*---+\s*$"))
+            .ToList();
+
+        return rows.Count > 0 && rows.All(IsPipeRow);
+    }
+
+    private static bool IsPipeRow(string line)
+    {
+        var cells = line.Split('|');
+        return cells.Length >= 5 && cells.Count(cell => cell.Trim().Length > 0) >= 4;
+    }
+
+    private static List<ReelScript> ParsePipeRows(string content)
+    {
+        var scripts = new List<ReelScript>();
+        var rows = content.Split(["\r\n", "\n"], StringSplitOptions.None)
+            .Select(line => line.Trim().TrimStart('\ufeff').Trim())
+            .Where(line => line.Length > 0 && !Regex.IsMatch(line, @"^\s*---+\s*$"));
+
+        foreach (var row in rows)
+        {
+            if (!IsPipeRow(row))
+            {
+                continue;
+            }
+
+            scripts.Add(ParsePipeRow(row, scripts.Count));
+        }
+
+        return scripts;
+    }
+
+    private static ReelScript ParsePipeRow(string row, int index)
+    {
+        var cells = row.Split('|').Select(cell => cell.Trim()).ToList();
+        var script = new ReelScript
+        {
+            Niche = cells.Count > 0 ? cells[0] : "",
+            Title = cells.Count > 1 && cells[1].Length > 0 ? cells[1] : $"Video {index + 1}",
+            Layout = PipeRowLayoutRotation[index % PipeRowLayoutRotation.Length]
+        };
+
+        var durationIndex = cells.FindIndex(cell => cell.StartsWith("Duration:", StringComparison.OrdinalIgnoreCase));
+        var pointEnd = durationIndex >= 0 ? durationIndex : cells.Count;
+        for (var i = 2; i < pointEnd; i++)
+        {
+            if (cells[i].Length == 0)
+            {
+                continue;
+            }
+
+            script.Points.Add(cells[i]);
+            script.PointPauseCountsBefore.Add(0);
+        }
+
+        if (durationIndex >= 0)
+        {
+            var match = Regex.Match(cells[durationIndex], @"\d+(?:\.\d+)?");
+            if (match.Success && float.TryParse(match.Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var duration))
+            {
+                script.Duration = duration;
+            }
+
+            foreach (var cell in cells.Skip(durationIndex + 1).Where(cell => cell.Length > 0))
+            {
+                if (TryApplyPipeMetadata(script, cell))
+                {
+                    continue;
+                }
+
+                if (string.IsNullOrWhiteSpace(script.Code))
+                {
+                    script.Code = cell;
+                }
+            }
+        }
+        else
+        {
+            foreach (var cell in cells.Skip(2).Where(cell => cell.Length > 0))
+            {
+                TryApplyPipeMetadata(script, cell);
+            }
+
+            var code = cells.LastOrDefault(cell => cell.Length > 0 && !IsPipeMetadata(cell));
+            if (!string.IsNullOrWhiteSpace(code) && !string.Equals(code, script.Title, StringComparison.OrdinalIgnoreCase))
+            {
+                script.Code = code;
+            }
+        }
+
+        return script;
+    }
+
+    private static bool TryApplyPipeMetadata(ReelScript script, string cell)
+    {
+        var match = Regex.Match(cell, @"^\s*(audio|video|vid)\s*:\s*(.+?)\s*$", RegexOptions.IgnoreCase);
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        var value = NormalizeInputPath(match.Groups[2].Value.Trim());
+        if (match.Groups[1].Value.Equals("audio", StringComparison.OrdinalIgnoreCase))
+        {
+            script.Audio = value.Length == 0 ? null : value;
+        }
+        else
+        {
+            script.Video = value.Length == 0 ? null : value;
+        }
+
+        return true;
+    }
+
+    private static bool IsPipeMetadata(string cell) =>
+        Regex.IsMatch(cell, @"^\s*(audio|video|vid)\s*:", RegexOptions.IgnoreCase);
+
+    private static string NormalizeInputPath(string path)
+    {
+        var trimmed = path.Trim().Trim('"');
+        if (Regex.IsMatch(trimmed, @"^/home/kayan/", RegexOptions.IgnoreCase))
+        {
+            return Path.Combine(@"C:\Users\kayan", trimmed["/home/kayan/".Length..].Replace('/', Path.DirectorySeparatorChar));
+        }
+
+        var mntMatch = Regex.Match(trimmed, @"^/mnt/([a-z])/(.+)$", RegexOptions.IgnoreCase);
+        if (mntMatch.Success)
+        {
+            return $"{mntMatch.Groups[1].Value.ToUpperInvariant()}:\\{mntMatch.Groups[2].Value.Replace('/', Path.DirectorySeparatorChar)}";
+        }
+
+        return trimmed;
     }
 
     public static string Slugify(string value)
@@ -175,6 +355,7 @@ internal static partial class ScriptParser
             Title = script.Title,
             Cta = script.Cta,
             Code = script.Code,
+            Niche = script.Niche,
             Duration = script.Duration,
             Layout = script.Layout,
             AllAtOnce = script.AllAtOnce,
@@ -283,6 +464,7 @@ internal static partial class ScriptParser
                     case "style":
                     case "niche":
                     case "sub_style":
+                        script.Niche = value;
                         break;
                     default:
                         if (lineNumberRegex.IsMatch(key))
@@ -331,6 +513,33 @@ internal static class OverlayRenderer
 {
     public const int Width = 1080;
     public const int Height = 1920;
+    private const float SafeTop = Height * 0.08f;
+    private const float SafeBottom = Height * 0.78f;
+    private const float BodyTop = Height * 0.22f;
+    private const float BodyWidth = Width * 0.74f;
+    private const float BodyX = (Width - BodyWidth) / 2f;
+    private enum ReadableVariant
+    {
+        CenterStack,
+        LeftStory,
+        Focus,
+        Card,
+        Timeline,
+        VerticalIndicator,
+        Divider,
+        Spotlight,
+        MinimalFloating
+    }
+    private sealed record ReadableLayout(ReadableVariant Variant, float TitleY, float BodyY, float BodyWidth, string BodyAlign, float LineGapScale, float ParagraphGapScale);
+    private static readonly Color[] CurrentLineAccentColors =
+    [
+        Color.FromArgb(255, 255, 217, 106), // warm yellow
+        Color.FromArgb(255, 139, 229, 255), // bright cyan
+        Color.FromArgb(255, 151, 255, 199), // mint
+        Color.FromArgb(255, 255, 184, 128), // peach
+        Color.FromArgb(255, 255, 151, 203), // soft pink
+        Color.FromArgb(255, 204, 190, 255)  // light lavender
+    ];
 
     public static string MakeOverlay(ReelScript script, int layerIndex, string outputFolder, string stamp)
     {
@@ -343,7 +552,11 @@ internal static class OverlayRenderer
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
 
-        if (layerIndex == 0)
+        if (!script.AllAtOnce)
+        {
+            DrawPopInStayOverlay(g, script, layout, layerIndex);
+        }
+        else if (layerIndex == 0)
         {
             var text = layout == "one_word_hook" ? FirstHookWord(script.Title) : NormalizeRenderText(script.Title);
             if (layout == "quote_style")
@@ -373,6 +586,262 @@ internal static class OverlayRenderer
         var path = Path.Combine(outputFolder, $"{ScriptParser.Slugify(script.Title)}-{stamp}-{layerIndex + 1}.png");
         image.Save(path, ImageFormat.Png);
         return path;
+    }
+
+    private static void DrawPopInStayOverlay(Graphics g, ReelScript script, string layout, int layerIndex)
+    {
+        var readable = GetReadableLayout(script, layout);
+        var bodyX = (Width - readable.BodyWidth) / 2f;
+        var titleText = layout == "one_word_hook" ? FirstHookWord(script.Title) : NormalizeRenderText(script.Title);
+        if (layout == "quote_style")
+        {
+            titleText = $"\"{titleText.Trim('"')}\"";
+        }
+
+        var titleFontSize = FitTitleFontSize(g, titleText, readable);
+        var titleLines = WrapText(g, titleText, titleFontSize, readable.BodyWidth);
+        DrawLines(g, titleLines, new LayoutParam(bodyX, readable.TitleY, readable.BodyWidth, "center", titleFontSize), Color.White, Color.FromArgb(210, 0, 0, 0));
+
+        if (layerIndex == 0)
+        {
+            return;
+        }
+
+        var currentPointIndex = Math.Min(layerIndex - 1, script.Points.Count - 1);
+        if (currentPointIndex < 0)
+        {
+            return;
+        }
+
+        var visiblePoints = script.Points
+            .Take(currentPointIndex + 1)
+            .Select(point => StripLeadingListNumber(NormalizeRenderText(point)))
+            .Where(point => point.Length > 0)
+            .ToList();
+        if (visiblePoints.Count == 0)
+        {
+            return;
+        }
+
+        var fitted = FitBody(g, visiblePoints, readable.BodyWidth, SafeBottom - readable.BodyY, Math.Min(42f, titleFontSize + 2f), readable);
+        DrawReadableTreatment(g, script, readable, bodyX, fitted, currentPointIndex);
+        DrawReadableBody(g, script, readable, bodyX, fitted, currentPointIndex);
+    }
+
+    private static void DrawReadableTreatment(Graphics g, ReelScript script, ReadableLayout readable, float bodyX, FittedBody fitted, int currentPointIndex)
+    {
+        var totalHeight = BodyHeight(fitted);
+        using var subtleBrush = new SolidBrush(Color.FromArgb(54, 0, 0, 0));
+        using var linePen = new Pen(Color.FromArgb(120, 255, 255, 255), 2f);
+        switch (readable.Variant)
+        {
+            case ReadableVariant.Card:
+                g.FillRectangle(subtleBrush, bodyX - 52f, readable.TitleY - 28f, readable.BodyWidth + 104f, Math.Min(SafeBottom - readable.TitleY, readable.BodyY - readable.TitleY + totalHeight + 72f));
+                break;
+            case ReadableVariant.Divider:
+                g.DrawLine(linePen, bodyX, readable.BodyY - 34f, bodyX + readable.BodyWidth, readable.BodyY - 34f);
+                break;
+            case ReadableVariant.Spotlight:
+                var newestY = ParagraphY(fitted, fitted.Paragraphs.Count - 1, readable.BodyY);
+                var newestHeight = ParagraphHeight(fitted.Paragraphs.Last(), fitted.FontSize, fitted.LineGap);
+                using (var accentBrush = new SolidBrush(Color.FromArgb(44, CurrentLineColor(script))))
+                {
+                    g.FillRectangle(accentBrush, bodyX - 24f, newestY - 12f, readable.BodyWidth + 48f, newestHeight + 24f);
+                }
+                break;
+        }
+    }
+
+    private static void DrawReadableBody(Graphics g, ReelScript script, ReadableLayout readable, float bodyX, FittedBody fitted, int currentPointIndex)
+    {
+        var accent = CurrentLineColor(script);
+        var isFinalTakeaway = currentPointIndex >= script.Points.Count - 1;
+        var markerX = bodyX - 34f;
+        using var timelinePen = new Pen(Color.FromArgb(120, 255, 255, 255), 3f);
+        if (readable.Variant is ReadableVariant.Timeline or ReadableVariant.VerticalIndicator && fitted.Paragraphs.Count > 1)
+        {
+            var firstY = ParagraphY(fitted, 0, readable.BodyY) + fitted.FontSize * 0.48f;
+            var lastY = ParagraphY(fitted, fitted.Paragraphs.Count - 1, readable.BodyY) + fitted.FontSize * 0.48f;
+            g.DrawLine(timelinePen, markerX, firstY, markerX, lastY);
+        }
+
+        for (var i = 0; i < fitted.Paragraphs.Count; i++)
+        {
+            var y = ParagraphY(fitted, i, readable.BodyY);
+            var isNewest = i == fitted.Paragraphs.Count - 1;
+            var opacity = OpacityForParagraph(readable.Variant, i, fitted.Paragraphs.Count);
+            var color = isNewest && isFinalTakeaway
+                ? accent
+                : Color.FromArgb(opacity, 255, 255, 255);
+
+            DrawReadableMarker(g, readable, markerX, y, i, fitted.Paragraphs.Count, isNewest, accent, opacity);
+
+            var paragraphX = readable.Variant == ReadableVariant.LeftStory ? bodyX + 26f : bodyX;
+            var paragraphWidth = readable.Variant == ReadableVariant.LeftStory ? readable.BodyWidth - 26f : readable.BodyWidth;
+            DrawLines(g, fitted.Paragraphs[i], new LayoutParam(paragraphX, y, paragraphWidth, readable.BodyAlign, fitted.FontSize), color, Color.FromArgb(Math.Min(225, opacity), 0, 0, 0), fitted.LineGap);
+
+            if (readable.Variant == ReadableVariant.Divider && i < fitted.Paragraphs.Count - 1)
+            {
+                using var dividerPen = new Pen(Color.FromArgb(72, 255, 255, 255), 1.5f);
+                var dividerY = y + ParagraphHeight(fitted.Paragraphs[i], fitted.FontSize, fitted.LineGap) + fitted.ParagraphGap * 0.48f;
+                g.DrawLine(dividerPen, bodyX, dividerY, bodyX + readable.BodyWidth, dividerY);
+            }
+        }
+    }
+
+    private static void DrawReadableMarker(Graphics g, ReadableLayout readable, float markerX, float y, int index, int count, bool isNewest, Color accent, int opacity)
+    {
+        if (readable.Variant == ReadableVariant.LeftStory)
+        {
+            using var brush = new SolidBrush(isNewest && index == count - 1 ? accent : Color.FromArgb(opacity, 255, 255, 255));
+            g.FillEllipse(brush, markerX + 19f, y + 15f, 9f, 9f);
+        }
+        else if (readable.Variant == ReadableVariant.Timeline)
+        {
+            using var fill = new SolidBrush(Color.FromArgb(235, 0, 0, 0));
+            using var outline = new Pen(isNewest ? accent : Color.FromArgb(opacity, 255, 255, 255), 3f);
+            g.FillEllipse(fill, markerX - 8f, y + 9f, 16f, 16f);
+            g.DrawEllipse(outline, markerX - 8f, y + 9f, 16f, 16f);
+        }
+        else if (readable.Variant == ReadableVariant.VerticalIndicator && isNewest)
+        {
+            using var pen = new Pen(accent, 5f);
+            g.DrawLine(pen, markerX - 13f, y + 9f, markerX - 13f, y + Math.Max(34f, 9f + 0.8f * readable.LineGapScale * 100f));
+        }
+    }
+
+    private static int OpacityForParagraph(ReadableVariant variant, int index, int count)
+    {
+        var distanceFromNewest = Math.Max(0, count - 1 - index);
+        if (variant == ReadableVariant.MinimalFloating)
+        {
+            return distanceFromNewest == 0 ? 255 : 132;
+        }
+
+        return distanceFromNewest switch
+        {
+            0 => 255,
+            1 => variant is ReadableVariant.Focus or ReadableVariant.Spotlight ? 198 : 218,
+            2 => variant is ReadableVariant.Focus or ReadableVariant.Spotlight ? 164 : 184,
+            _ => variant is ReadableVariant.Focus or ReadableVariant.Spotlight ? 138 : 160
+        };
+    }
+
+    private static ReadableLayout GetReadableLayout(ReelScript script, string layout)
+    {
+        var variant = PickReadableVariant(script, layout);
+        var align = variant == ReadableVariant.CenterStack || PrefersCenteredBody(script) ? "center" : "left";
+        return variant switch
+        {
+            ReadableVariant.CenterStack => new(variant, SafeTop + 12f, Height * 0.250f, Width * 0.74f, "center", 0.38f, 1.06f),
+            ReadableVariant.LeftStory => new(variant, SafeTop + 10f, Height * 0.255f, Width * 0.72f, "left", 0.36f, 1.02f),
+            ReadableVariant.Focus => new(variant, SafeTop + 14f, Height * 0.255f, Width * 0.73f, align, 0.38f, 1.05f),
+            ReadableVariant.Card => new(variant, SafeTop + 18f, Height * 0.265f, Width * 0.70f, align, 0.35f, 0.96f),
+            ReadableVariant.Timeline => new(variant, SafeTop + 12f, Height * 0.250f, Width * 0.70f, "left", 0.34f, 0.92f),
+            ReadableVariant.VerticalIndicator => new(variant, SafeTop + 16f, Height * 0.260f, Width * 0.70f, "left", 0.35f, 0.98f),
+            ReadableVariant.Divider => new(variant, SafeTop + 10f, Height * 0.255f, Width * 0.75f, align, 0.32f, 0.82f),
+            ReadableVariant.Spotlight => new(variant, SafeTop + 16f, Height * 0.260f, Width * 0.72f, align, 0.34f, 0.94f),
+            ReadableVariant.MinimalFloating => new(variant, SafeTop + 24f, Height * 0.315f, Width * 0.68f, align, 0.42f, 1.18f),
+            _ => new(variant, SafeTop + 12f, Height * 0.250f, BodyWidth, align, 0.36f, 1.02f)
+        };
+    }
+
+    private static ReadableVariant PickReadableVariant(ReelScript script, string layout)
+    {
+        var niche = NormalizeRenderText(script.Niche).ToLowerInvariant();
+        ReadableVariant[] variants = niche switch
+        {
+            var n when n.Contains("bible") || n.Contains("faith") || n.Contains("prayer") =>
+                [ReadableVariant.CenterStack, ReadableVariant.Timeline, ReadableVariant.Focus, ReadableVariant.Card, ReadableVariant.Divider, ReadableVariant.Spotlight],
+            var n when n.Contains("stoic") || n.Contains("quote") =>
+                [ReadableVariant.CenterStack, ReadableVariant.Focus, ReadableVariant.Card, ReadableVariant.Divider, ReadableVariant.Spotlight],
+            var n when n.Contains("communication") || n.Contains("comm") =>
+                [ReadableVariant.LeftStory, ReadableVariant.Focus, ReadableVariant.Card, ReadableVariant.VerticalIndicator, ReadableVariant.Spotlight],
+            var n when n.Contains("product") || n.Contains("money") || n.Contains("psychology") || n.Contains("self") =>
+                [ReadableVariant.LeftStory, ReadableVariant.Focus, ReadableVariant.Card, ReadableVariant.VerticalIndicator, ReadableVariant.Divider, ReadableVariant.Spotlight, ReadableVariant.MinimalFloating],
+            var n when n.Contains("gym") || n.Contains("fitness") =>
+                [ReadableVariant.CenterStack, ReadableVariant.LeftStory, ReadableVariant.Focus, ReadableVariant.Card, ReadableVariant.VerticalIndicator, ReadableVariant.Spotlight],
+            _ =>
+                [ReadableVariant.CenterStack, ReadableVariant.LeftStory, ReadableVariant.Focus, ReadableVariant.Card, ReadableVariant.Divider, ReadableVariant.Spotlight]
+        };
+
+        return variants[Math.Abs(StableHash($"{script.Code}|{script.Title}|{layout}|{script.Niche}")) % variants.Length];
+    }
+
+    private static int StableHash(string key)
+    {
+        var hash = 17;
+        foreach (var ch in key)
+        {
+            hash = unchecked(hash * 31 + ch);
+        }
+
+        return hash == int.MinValue ? 0 : hash;
+    }
+
+    private static bool PrefersCenteredBody(ReelScript script)
+    {
+        var niche = NormalizeRenderText(script.Niche).ToLowerInvariant();
+        return niche.Contains("bible") ||
+            niche.Contains("faith") ||
+            niche.Contains("stoic") ||
+            niche.Contains("quote") ||
+            niche.Contains("prayer");
+    }
+
+    private static Color CurrentLineColor(ReelScript script)
+    {
+        var key = $"{script.Code}|{script.Title}";
+        return CurrentLineAccentColors[Math.Abs(StableHash(key)) % CurrentLineAccentColors.Length];
+    }
+
+    private sealed record FittedBody(float FontSize, float LineGap, float ParagraphGap, List<List<string>> Paragraphs);
+
+    private static float BodyHeight(FittedBody fitted) =>
+        fitted.Paragraphs.Sum(lines => ParagraphHeight(lines, fitted.FontSize, fitted.LineGap)) +
+        fitted.ParagraphGap * Math.Max(0, fitted.Paragraphs.Count - 1);
+
+    private static float ParagraphY(FittedBody fitted, int index, float startY)
+    {
+        var y = startY;
+        for (var i = 0; i < index; i++)
+        {
+            y += ParagraphHeight(fitted.Paragraphs[i], fitted.FontSize, fitted.LineGap) + fitted.ParagraphGap;
+        }
+
+        return y;
+    }
+
+    private static float FitTitleFontSize(Graphics g, string title, ReadableLayout readable)
+    {
+        for (var fontSize = 66f; fontSize >= 52f; fontSize -= 2f)
+        {
+            if (TextBlockHeight(g, title, fontSize, readable.BodyWidth) <= readable.BodyY - readable.TitleY - 34f)
+            {
+                return fontSize;
+            }
+        }
+
+        return 52f;
+    }
+
+    private static FittedBody FitBody(Graphics g, IReadOnlyList<string> points, float width, float maxHeight, float startFontSize, ReadableLayout readable)
+    {
+        for (var fontSize = startFontSize; fontSize >= 26f; fontSize -= 2f)
+        {
+            var lineGap = Math.Max(10f, fontSize * readable.LineGapScale);
+            var paragraphGap = Math.Max(30f, fontSize * readable.ParagraphGapScale);
+            var paragraphs = points.Select(point => WrapText(g, point, fontSize, width)).ToList();
+            var height = paragraphs.Sum(lines => ParagraphHeight(lines, fontSize, lineGap)) + paragraphGap * Math.Max(0, paragraphs.Count - 1);
+            if (height <= maxHeight)
+            {
+                return new FittedBody(fontSize, lineGap, paragraphGap, paragraphs);
+            }
+        }
+
+        var minimumLineGap = 8f;
+        var minimumParagraphGap = 22f;
+        return new FittedBody(26f, minimumLineGap, minimumParagraphGap, points.Select(point => WrapText(g, point, 26f, width)).ToList());
     }
 
     public static LayoutSpec GetLayoutSpec(string layout) =>
@@ -414,12 +883,13 @@ internal static class OverlayRenderer
         DrawLines(g, lines, param, color, shadow);
     }
 
-    private static void DrawLines(Graphics g, IReadOnlyList<string> lines, LayoutParam param, Color color, Color shadow)
+    private static void DrawLines(Graphics g, IReadOnlyList<string> lines, LayoutParam param, Color color, Color shadow, float? lineGap = null)
     {
         using var font = new Font("Arial", param.FontSize, FontStyle.Bold, GraphicsUnit.Pixel);
         using var shadowBrush = new SolidBrush(shadow);
         using var brush = new SolidBrush(color);
         var y = param.Y;
+        var gap = lineGap ?? 12f;
         foreach (var line in lines)
         {
             var size = g.MeasureString(line, font, new PointF(0, 0), StringFormat.GenericTypographic);
@@ -429,10 +899,28 @@ internal static class OverlayRenderer
                 "right" => param.X + param.Width - size.Width,
                 _ => param.X + (param.Width - size.Width) / 2f
             };
-            g.DrawString(line, font, shadowBrush, x + 3, y + 4, StringFormat.GenericTypographic);
+
+            foreach (var (dx, dy) in StrokeOffsets())
+            {
+                g.DrawString(line, font, shadowBrush, x + dx, y + dy, StringFormat.GenericTypographic);
+            }
+
             g.DrawString(line, font, brush, x, y, StringFormat.GenericTypographic);
-            y += size.Height + 12;
+            y += size.Height + gap;
         }
+    }
+
+    private static IEnumerable<(float X, float Y)> StrokeOffsets()
+    {
+        yield return (-3f, 0f);
+        yield return (3f, 0f);
+        yield return (0f, -3f);
+        yield return (0f, 3f);
+        yield return (-2f, -2f);
+        yield return (2f, -2f);
+        yield return (-2f, 2f);
+        yield return (2f, 2f);
+        yield return (3f, 4f);
     }
 
     private static List<string> WrapText(Graphics g, string text, float fontSize, float maxWidth)
@@ -468,7 +956,7 @@ internal static class OverlayRenderer
         var point = NormalizeRenderText(script.Points[pointIndex]);
         if (layout == "progress_reveal")
         {
-            return $"{pointIndex + 1}/{Math.Max(script.Points.Count, 1)}  {ParseLeadingListNumber(point)?.Rest ?? point}";
+            return StripLeadingListNumber(point);
         }
 
         if (spec.Marker == "- " && ScriptPrefersNumberedList(script))
@@ -531,6 +1019,9 @@ internal static class OverlayRenderer
     private static float TextBlockHeight(Graphics g, string text, float fontSize, float width) =>
         WrapText(g, text, fontSize, width).Count * (fontSize + 12f);
 
+    private static float ParagraphHeight(IReadOnlyList<string> lines, float fontSize, float lineGap) =>
+        lines.Count == 0 ? 0 : lines.Count * fontSize + Math.Max(0, lines.Count - 1) * lineGap;
+
     private static bool ScriptPrefersNumberedList(ReelScript script)
     {
         var first = NormalizeRenderText(script.Title).FirstOrDefault();
@@ -551,6 +1042,9 @@ internal static class OverlayRenderer
         var match = Regex.Match(trimmed, @"^(\d+)(?:[\s.)]+)(.+)$");
         return match.Success ? new LeadingListNumber(int.Parse(match.Groups[1].Value), match.Groups[2].Value.TrimStart()) : null;
     }
+
+    private static string StripLeadingListNumber(string value) =>
+        ParseLeadingListNumber(value)?.Rest ?? value;
 
     private static string FirstHookWord(string value)
     {
@@ -616,7 +1110,7 @@ internal static class Renderer
 {
     public const float MinReelDuration = 10.0f;
     public const float DefaultReelDuration = 12.0f;
-    public const float MaxReelDuration = 15.99f;
+    public const float MaxReelDuration = 24.9f;
     private static readonly Random Random = new();
     private static readonly object TimingFileLock = new();
 
@@ -719,7 +1213,7 @@ internal static class Renderer
         }
 
         var videos = ListFiles(options.VideosFolder, [".mp4", ".mov", ".mkv", ".webm"]).OrderBy(_ => Random.Next()).ToList();
-        var music = ListFiles(options.MusicFolder, [".mp3", ".wav", ".m4a", ".aac"]).OrderBy(_ => Random.Next()).ToList();
+        var music = ListFiles(options.MusicFolder, [".mp3", ".wav", ".m4a", ".aac", ".mp4", ".mov", ".mkv", ".webm"]).OrderBy(_ => Random.Next()).ToList();
         log(videos.Count == 0 ? "No background videos found; rendering on solid black background." : $"Found {videos.Count} background video(s)");
         log(music.Count == 0 ? "No music tracks found; rendering silent videos." : $"Found {music.Count} music track(s)");
         log($"Blur mode: {options.Blur.ToArg()}");
@@ -740,7 +1234,7 @@ internal static class Renderer
             {
                 var script = ScriptParser.CollapseDuplicateTitlePoint(item.script);
                 var stamp = MillisecondStamp();
-                var duration = ResolveReelDuration(script.Duration, options.Duration);
+                var duration = ResolveReelDuration(script, options.Duration);
                 log($"[Worker] Rendering script {item.index + 1}/{scripts.Count} from {Path.GetFileName(options.ScriptPath)}: \"{script.Title}\"");
 
                 var overlays = new List<string> { OverlayRenderer.MakeOverlay(script, 0, options.OverlayFolder, stamp) };
@@ -828,16 +1322,66 @@ internal static class Renderer
 
     private static int FfmpegThreadsForWorkers(int workers) => Math.Clamp(Math.Max(1, Environment.ProcessorCount) / Math.Max(1, workers), 1, 4);
 
-    private static float ResolveReelDuration(float? scriptDuration, float defaultDuration)
+    private sealed record DurationRange(float Min, float Max);
+
+    private static float ResolveReelDuration(ReelScript script, float defaultDuration)
     {
-        if (scriptDuration.HasValue)
+        var range = DurationRangeFor(script);
+        var requested = script.Duration ?? defaultDuration;
+        if (requested >= range.Min && requested <= range.Max)
         {
-            return Math.Clamp(scriptDuration.Value, MinReelDuration, MaxReelDuration);
+            return Math.Clamp(requested, MinReelDuration, MaxReelDuration);
         }
 
-        var normalized = Math.Clamp(defaultDuration, MinReelDuration, MaxReelDuration);
-        return Math.Abs(normalized - DefaultReelDuration) < float.Epsilon ? Random.Next(1000, 1600) / 100f : normalized;
+        var natural = PickDurationInRange(script, range);
+        if (requested > range.Max)
+        {
+            return Math.Clamp(requested, range.Min, MaxReelDuration);
+        }
+
+        return natural;
     }
+
+    private static DurationRange DurationRangeFor(ReelScript script)
+    {
+        var niche = NormalizeLoose(script.Niche);
+        var storyLike = script.Points.Count >= 6 || script.Points.Sum(point => point.Length) >= 430;
+        return niche switch
+        {
+            var n when n.Contains("bible") || n.Contains("faith") || n.Contains("prayer") => new(18.6f, 24.9f),
+            var n when n.Contains("stoic") => new(18.2f, 22.4f),
+            var n when n.Contains("product") => new(18.1f, 19.6f),
+            var n when n.Contains("psychology") || n.Contains("money") => new(18.1f, 20.8f),
+            var n when n.Contains("self") || n.Contains("relationship") || n.Contains("parent") => new(18.4f, 22.5f),
+            var n when n.Contains("communication") || n.Contains("comm") => new(18.1f, 20.8f),
+            var n when n.Contains("gym") || n.Contains("fitness") => storyLike ? new(18.2f, 20.6f) : new(18.1f, 19.4f),
+            _ => new(18.1f, 22.4f)
+        };
+    }
+
+    private static float PickDurationInRange(ReelScript script, DurationRange range)
+    {
+        var hash = StableHash($"{script.Code}|{script.Title}|{script.Niche}|duration");
+        var unit = (Math.Abs(hash) % 10000) / 9999f;
+        var seconds = range.Min + (range.Max - range.Min) * unit;
+        return MathF.Round(Math.Clamp(seconds, MinReelDuration, MaxReelDuration) * 10f) / 10f;
+    }
+
+    private static int StableHash(string key)
+    {
+        var hash = 17;
+        foreach (var ch in key)
+        {
+            hash = unchecked(hash * 31 + ch);
+        }
+
+        return hash == int.MinValue ? 0 : hash;
+    }
+
+    private static string NormalizeLoose(string value) =>
+        string.Join(" ", value.Select(ch => char.IsLetterOrDigit(ch) ? char.ToLowerInvariant(ch) : ' ')
+            .Aggregate(new StringBuilder(), (sb, ch) => sb.Append(ch), sb => sb.ToString())
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries));
 
     private static string MillisecondStamp()
     {
@@ -918,7 +1462,7 @@ internal static class FfmpegRenderer
         cancellationToken.ThrowIfCancellationRequested();
         var videoPath = script.Video ?? (videos.Count > 0 ? videos[index % videos.Count] : null);
         var musicPath = script.Audio ?? (musicFiles.Count > 0 ? musicFiles[index % musicFiles.Count] : null);
-        var revealStarts = BuildRevealStarts(script, overlayPaths.Count);
+        var revealStarts = BuildRevealStarts(script, overlayPaths.Count, duration);
         var effectiveDuration = Math.Max(duration, (revealStarts.LastOrDefault() + 2f));
         var treatment = ChooseTreatment(blurStrength);
 
@@ -994,9 +1538,8 @@ internal static class FfmpegRenderer
         return outputPath;
     }
 
-    private static List<float> BuildRevealStarts(ReelScript script, int overlayCount)
+    private static List<float> BuildRevealStarts(ReelScript script, int overlayCount, float duration)
     {
-        const float step = 2.5f;
         var starts = new List<float>(overlayCount);
         if (script.AllAtOnce)
         {
@@ -1004,23 +1547,76 @@ internal static class FfmpegRenderer
             return starts;
         }
 
-        var current = 0f;
-        for (var i = 0; i < overlayCount; i++)
+        if (overlayCount <= 0)
         {
+            return starts;
+        }
+
+        starts.Add(0f);
+        var revealCount = overlayCount - 1;
+        if (revealCount == 0)
+        {
+            return starts;
+        }
+
+        var seed = StableHash($"{script.Code}|{script.Title}|timing");
+        var firstLineAt = 0.72f + (Math.Abs(seed) % 22) / 100f;
+        starts.Add(firstLineAt);
+        if (revealCount == 1)
+        {
+            return starts;
+        }
+
+        var finalHold = Math.Clamp(duration * 0.23f, 2.7f, 3.8f);
+        var finalRevealAt = Math.Clamp(duration - finalHold, Math.Min(7.8f, duration * 0.72f), Math.Max(1.2f, duration - 2.2f));
+        finalRevealAt = Math.Max(finalRevealAt, firstLineAt + 0.9f);
+        var remainingRevealCount = revealCount - 1;
+        var weights = new List<float>(remainingRevealCount);
+        for (var i = 0; i < remainingRevealCount; i++)
+        {
+            var jitter = (((seed >> ((i % 4) * 7)) & 0x7F) / 127f) * 0.34f - 0.17f;
+            var lateWeight = 1f + i * 0.045f;
+            weights.Add(Math.Max(0.72f, lateWeight + jitter));
+        }
+
+        var totalWeight = weights.Sum();
+        var current = firstLineAt;
+        var remainingWindow = Math.Max(0.9f, finalRevealAt - firstLineAt);
+        for (var i = 0; i < remainingRevealCount; i++)
+        {
+            current += remainingWindow * weights[i] / totalWeight;
             starts.Add(current);
-            if (i == 0)
+        }
+
+        for (var i = 1; i < starts.Count; i++)
+        {
+            var pointIndex = i - 1;
+            var pauseCount = pointIndex < script.Points.Count
+                ? script.PointPauseCountsBefore.ElementAtOrDefault(pointIndex)
+                : script.CtaPauseCountBefore;
+            if (pauseCount <= 0)
             {
-                current += step;
                 continue;
             }
 
-            var pointIndex = i - 1;
-            current += pointIndex < script.Points.Count
-                ? step * (1 + script.PointPauseCountsBefore.ElementAtOrDefault(pointIndex))
-                : step * (1 + script.CtaPauseCountBefore);
+            for (var j = i; j < starts.Count; j++)
+            {
+                starts[j] += pauseCount * 0.45f;
+            }
         }
 
         return starts;
+    }
+
+    private static int StableHash(string key)
+    {
+        var hash = 17;
+        foreach (var ch in key)
+        {
+            hash = unchecked(hash * 31 + ch);
+        }
+
+        return hash == int.MinValue ? 0 : hash;
     }
 
     private static float? ProbeDuration(string path)
