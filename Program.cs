@@ -8,7 +8,9 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+#if WINDOWS
 using System.Windows.Forms;
+#endif
 
 namespace ReelForgeCSharp;
 
@@ -41,19 +43,29 @@ internal static class Program
                 }
             }
 
+#if WINDOWS
             ApplicationConfiguration.Initialize();
             Application.Run(new ReelForgeForm());
             return 0;
+#else
+            Console.Error.WriteLine("ReelForge desktop UI is only available on Windows. Use CLI mode with --script on Linux.");
+            return 1;
+#endif
         }
         catch (Exception ex)
         {
             var logPath = Path.Combine(Directory.GetCurrentDirectory(), "startup_crash.log");
             File.WriteAllText(logPath, ex.ToString(), Encoding.UTF8);
+#if WINDOWS
             MessageBox.Show(
                 $"Reel Forge C# failed to start.\n\nA crash log was written to:\n{logPath}\n\n{ex.Message}",
                 "Reel Forge C#",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
+#else
+            Console.Error.WriteLine($"Reel Forge C# failed to start. A crash log was written to: {logPath}");
+            Console.Error.WriteLine(ex.Message);
+#endif
             return 1;
         }
     }
@@ -1803,6 +1815,7 @@ internal static class Cli
     }
 }
 
+#if WINDOWS
 internal sealed class SavedConfig
 {
     [JsonPropertyName("video_folder")]
@@ -2277,3 +2290,4 @@ internal sealed class ReelForgeForm : Form
         base.OnFormClosing(e);
     }
 }
+#endif
