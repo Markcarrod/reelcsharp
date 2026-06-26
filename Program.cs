@@ -1,13 +1,16 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+#if WINDOWS
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
+#endif
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using SkiaSharp;
 #if WINDOWS
 using System.Windows.Forms;
 #endif
@@ -543,14 +546,14 @@ internal static class OverlayRenderer
         MinimalFloating
     }
     private sealed record ReadableLayout(ReadableVariant Variant, float TitleY, float BodyY, float BodyWidth, string BodyAlign, float LineGapScale, float ParagraphGapScale);
-    private static readonly Color[] CurrentLineAccentColors =
+    private static readonly SKColor[] CurrentLineAccentColors =
     [
-        Color.FromArgb(255, 255, 217, 106), // warm yellow
-        Color.FromArgb(255, 139, 229, 255), // bright cyan
-        Color.FromArgb(255, 151, 255, 199), // mint
-        Color.FromArgb(255, 255, 184, 128), // peach
-        Color.FromArgb(255, 255, 151, 203), // soft pink
-        Color.FromArgb(255, 204, 190, 255)  // light lavender
+        new(255, 217, 106, 255), // warm yellow
+        new(139, 229, 255, 255), // bright cyan
+        new(151, 255, 199, 255), // mint
+        new(255, 184, 128, 255), // peach
+        new(255, 151, 203, 255), // soft pink
+        new(204, 190, 255, 255)  // light lavender
     ];
 
     public static string MakeOverlay(ReelScript script, int layerIndex, string outputFolder, string stamp)
@@ -558,11 +561,9 @@ internal static class OverlayRenderer
         Directory.CreateDirectory(outputFolder);
         var layout = ScriptParser.NormalizeLayout(script.Layout);
         var spec = GetLayoutSpec(layout);
-        using var image = new Bitmap(Width, Height, PixelFormat.Format32bppArgb);
-        using var g = Graphics.FromImage(image);
-        g.Clear(Color.Transparent);
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+        using var image = new SKBitmap(new SKImageInfo(Width, Height, SKColorType.Bgra8888, SKAlphaType.Premul));
+        using var g = new SKCanvas(image);
+        g.Clear(SKColors.Transparent);
 
         if (!script.AllAtOnce)
         {
@@ -576,7 +577,7 @@ internal static class OverlayRenderer
                 text = $"\"{text.Trim('"')}\"";
             }
 
-            DrawWrapped(g, text, spec.Title, Color.White, Color.FromArgb(180, 0, 0, 0));
+            DrawWrapped(g, text, spec.Title, SKColors.White, new SKColor(0, 0, 0, 180));
         }
         else
         {
@@ -585,22 +586,24 @@ internal static class OverlayRenderer
             {
                 var text = PointText(script, spec, layout, pointIndex);
                 var (x, y, align) = PointPosition(g, script, spec, layout, pointIndex);
-                DrawWrapped(g, text, spec.Point with { X = x, Y = y, Align = align }, Color.White, Color.FromArgb(185, 0, 0, 0));
+                DrawWrapped(g, text, spec.Point with { X = x, Y = y, Align = align }, SKColors.White, new SKColor(0, 0, 0, 185));
             }
             else if (pointIndex == script.Points.Count && script.Cta.Length > 0)
             {
                 var lines = WrapText(g, NormalizeRenderText(script.Cta), spec.Cta.FontSize, spec.Cta.Width);
                 var y = CtaPositionY(g, script, spec, layout, lines);
-                DrawLines(g, lines, spec.Cta with { Y = y }, Color.FromArgb(240, 255, 255, 255), Color.FromArgb(180, 0, 0, 0));
+                DrawLines(g, lines, spec.Cta with { Y = y }, new SKColor(255, 255, 255, 240), new SKColor(0, 0, 0, 180));
             }
         }
 
         var path = Path.Combine(outputFolder, $"{ScriptParser.Slugify(script.Title)}-{stamp}-{layerIndex + 1}.png");
-        image.Save(path, ImageFormat.Png);
+        using var encoded = SKImage.FromBitmap(image).Encode(SKEncodedImageFormat.Png, 100);
+        using var stream = File.Open(path, FileMode.Create, FileAccess.Write);
+        encoded.SaveTo(stream);
         return path;
     }
 
-    private static void DrawPopInStayOverlay(Graphics g, ReelScript script, string layout, int layerIndex)
+    private static void DrawPopInStayOverlay(SKCanvas g, ReelScript script, string layout, int layerIndex)
     {
         var readable = GetReadableLayout(script, layout);
         var bodyX = (Width - readable.BodyWidth) / 2f;
@@ -612,7 +615,7 @@ internal static class OverlayRenderer
 
         var titleFontSize = FitTitleFontSize(g, titleText, readable);
         var titleLines = WrapText(g, titleText, titleFontSize, readable.BodyWidth);
-        DrawLines(g, titleLines, new LayoutParam(bodyX, readable.TitleY, readable.BodyWidth, "center", titleFontSize), Color.White, Color.FromArgb(210, 0, 0, 0));
+        DrawLines(g, titleLines, new LayoutParam(bodyX, readable.TitleY, readable.BodyWidth, "center", titleFontSize), SKColors.White, new SKColor(0, 0, 0, 210));
 
         if (layerIndex == 0)
         {
@@ -640,41 +643,41 @@ internal static class OverlayRenderer
         DrawReadableBody(g, script, readable, bodyX, fitted, currentPointIndex);
     }
 
-    private static void DrawReadableTreatment(Graphics g, ReelScript script, ReadableLayout readable, float bodyX, FittedBody fitted, int currentPointIndex)
+    private static void DrawReadableTreatment(SKCanvas g, ReelScript script, ReadableLayout readable, float bodyX, FittedBody fitted, int currentPointIndex)
     {
         var totalHeight = BodyHeight(fitted);
-        using var subtleBrush = new SolidBrush(Color.FromArgb(54, 0, 0, 0));
-        using var linePen = new Pen(Color.FromArgb(120, 255, 255, 255), 2f);
+        using var subtleBrush = FillPaint(new SKColor(0, 0, 0, 54));
+        using var linePen = StrokePaint(new SKColor(255, 255, 255, 120), 2f);
         switch (readable.Variant)
         {
             case ReadableVariant.Card:
-                g.FillRectangle(subtleBrush, bodyX - 52f, readable.TitleY - 28f, readable.BodyWidth + 104f, Math.Min(SafeBottom - readable.TitleY, readable.BodyY - readable.TitleY + totalHeight + 72f));
+                g.DrawRect(bodyX - 52f, readable.TitleY - 28f, readable.BodyWidth + 104f, Math.Min(SafeBottom - readable.TitleY, readable.BodyY - readable.TitleY + totalHeight + 72f), subtleBrush);
                 break;
             case ReadableVariant.Divider:
-                g.DrawLine(linePen, bodyX, readable.BodyY - 34f, bodyX + readable.BodyWidth, readable.BodyY - 34f);
+                g.DrawLine(bodyX, readable.BodyY - 34f, bodyX + readable.BodyWidth, readable.BodyY - 34f, linePen);
                 break;
             case ReadableVariant.Spotlight:
                 var newestY = ParagraphY(fitted, fitted.Paragraphs.Count - 1, readable.BodyY);
                 var newestHeight = ParagraphHeight(fitted.Paragraphs.Last(), fitted.FontSize, fitted.LineGap);
-                using (var accentBrush = new SolidBrush(Color.FromArgb(44, CurrentLineColor(script))))
+                using (var accentBrush = FillPaint(WithAlpha(CurrentLineColor(script), 44)))
                 {
-                    g.FillRectangle(accentBrush, bodyX - 24f, newestY - 12f, readable.BodyWidth + 48f, newestHeight + 24f);
+                    g.DrawRect(bodyX - 24f, newestY - 12f, readable.BodyWidth + 48f, newestHeight + 24f, accentBrush);
                 }
                 break;
         }
     }
 
-    private static void DrawReadableBody(Graphics g, ReelScript script, ReadableLayout readable, float bodyX, FittedBody fitted, int currentPointIndex)
+    private static void DrawReadableBody(SKCanvas g, ReelScript script, ReadableLayout readable, float bodyX, FittedBody fitted, int currentPointIndex)
     {
         var accent = CurrentLineColor(script);
         var isFinalTakeaway = currentPointIndex >= script.Points.Count - 1;
         var markerX = bodyX - 34f;
-        using var timelinePen = new Pen(Color.FromArgb(120, 255, 255, 255), 3f);
+        using var timelinePen = StrokePaint(new SKColor(255, 255, 255, 120), 3f);
         if (readable.Variant is ReadableVariant.Timeline or ReadableVariant.VerticalIndicator && fitted.Paragraphs.Count > 1)
         {
             var firstY = ParagraphY(fitted, 0, readable.BodyY) + fitted.FontSize * 0.48f;
             var lastY = ParagraphY(fitted, fitted.Paragraphs.Count - 1, readable.BodyY) + fitted.FontSize * 0.48f;
-            g.DrawLine(timelinePen, markerX, firstY, markerX, lastY);
+            g.DrawLine(markerX, firstY, markerX, lastY, timelinePen);
         }
 
         for (var i = 0; i < fitted.Paragraphs.Count; i++)
@@ -684,41 +687,41 @@ internal static class OverlayRenderer
             var opacity = OpacityForParagraph(readable.Variant, i, fitted.Paragraphs.Count);
             var color = isNewest && isFinalTakeaway
                 ? accent
-                : Color.FromArgb(opacity, 255, 255, 255);
+                : new SKColor(255, 255, 255, (byte)opacity);
 
             DrawReadableMarker(g, readable, markerX, y, i, fitted.Paragraphs.Count, isNewest, accent, opacity);
 
             var paragraphX = readable.Variant == ReadableVariant.LeftStory ? bodyX + 26f : bodyX;
             var paragraphWidth = readable.Variant == ReadableVariant.LeftStory ? readable.BodyWidth - 26f : readable.BodyWidth;
-            DrawLines(g, fitted.Paragraphs[i], new LayoutParam(paragraphX, y, paragraphWidth, readable.BodyAlign, fitted.FontSize), color, Color.FromArgb(Math.Min(225, opacity), 0, 0, 0), fitted.LineGap);
+            DrawLines(g, fitted.Paragraphs[i], new LayoutParam(paragraphX, y, paragraphWidth, readable.BodyAlign, fitted.FontSize), color, new SKColor(0, 0, 0, (byte)Math.Min(225, opacity)), fitted.LineGap);
 
             if (readable.Variant == ReadableVariant.Divider && i < fitted.Paragraphs.Count - 1)
             {
-                using var dividerPen = new Pen(Color.FromArgb(72, 255, 255, 255), 1.5f);
+                using var dividerPen = StrokePaint(new SKColor(255, 255, 255, 72), 1.5f);
                 var dividerY = y + ParagraphHeight(fitted.Paragraphs[i], fitted.FontSize, fitted.LineGap) + fitted.ParagraphGap * 0.48f;
-                g.DrawLine(dividerPen, bodyX, dividerY, bodyX + readable.BodyWidth, dividerY);
+                g.DrawLine(bodyX, dividerY, bodyX + readable.BodyWidth, dividerY, dividerPen);
             }
         }
     }
 
-    private static void DrawReadableMarker(Graphics g, ReadableLayout readable, float markerX, float y, int index, int count, bool isNewest, Color accent, int opacity)
+    private static void DrawReadableMarker(SKCanvas g, ReadableLayout readable, float markerX, float y, int index, int count, bool isNewest, SKColor accent, int opacity)
     {
         if (readable.Variant == ReadableVariant.LeftStory)
         {
-            using var brush = new SolidBrush(isNewest && index == count - 1 ? accent : Color.FromArgb(opacity, 255, 255, 255));
-            g.FillEllipse(brush, markerX + 19f, y + 15f, 9f, 9f);
+            using var brush = FillPaint(isNewest && index == count - 1 ? accent : new SKColor(255, 255, 255, (byte)opacity));
+            g.DrawOval(markerX + 23.5f, y + 19.5f, 4.5f, 4.5f, brush);
         }
         else if (readable.Variant == ReadableVariant.Timeline)
         {
-            using var fill = new SolidBrush(Color.FromArgb(235, 0, 0, 0));
-            using var outline = new Pen(isNewest ? accent : Color.FromArgb(opacity, 255, 255, 255), 3f);
-            g.FillEllipse(fill, markerX - 8f, y + 9f, 16f, 16f);
-            g.DrawEllipse(outline, markerX - 8f, y + 9f, 16f, 16f);
+            using var fill = FillPaint(new SKColor(0, 0, 0, 235));
+            using var outline = StrokePaint(isNewest ? accent : new SKColor(255, 255, 255, (byte)opacity), 3f);
+            g.DrawOval(markerX, y + 17f, 8f, 8f, fill);
+            g.DrawOval(markerX, y + 17f, 8f, 8f, outline);
         }
         else if (readable.Variant == ReadableVariant.VerticalIndicator && isNewest)
         {
-            using var pen = new Pen(accent, 5f);
-            g.DrawLine(pen, markerX - 13f, y + 9f, markerX - 13f, y + Math.Max(34f, 9f + 0.8f * readable.LineGapScale * 100f));
+            using var pen = StrokePaint(accent, 5f);
+            g.DrawLine(markerX - 13f, y + 9f, markerX - 13f, y + Math.Max(34f, 9f + 0.8f * readable.LineGapScale * 100f), pen);
         }
     }
 
@@ -801,7 +804,7 @@ internal static class OverlayRenderer
             niche.Contains("prayer");
     }
 
-    private static Color CurrentLineColor(ReelScript script)
+    private static SKColor CurrentLineColor(ReelScript script)
     {
         var key = $"{script.Code}|{script.Title}";
         return CurrentLineAccentColors[Math.Abs(StableHash(key)) % CurrentLineAccentColors.Length];
@@ -824,7 +827,7 @@ internal static class OverlayRenderer
         return y;
     }
 
-    private static float FitTitleFontSize(Graphics g, string title, ReadableLayout readable)
+    private static float FitTitleFontSize(SKCanvas g, string title, ReadableLayout readable)
     {
         for (var fontSize = 66f; fontSize >= 52f; fontSize -= 2f)
         {
@@ -837,7 +840,7 @@ internal static class OverlayRenderer
         return 52f;
     }
 
-    private static FittedBody FitBody(Graphics g, IReadOnlyList<string> points, float width, float maxHeight, float startFontSize, ReadableLayout readable)
+    private static FittedBody FitBody(SKCanvas g, IReadOnlyList<string> points, float width, float maxHeight, float startFontSize, ReadableLayout readable)
     {
         for (var fontSize = startFontSize; fontSize >= 26f; fontSize -= 2f)
         {
@@ -889,38 +892,69 @@ internal static class OverlayRenderer
     private static LayoutSpec Spec(float tx, float ty, float tw, string ta, float ts, float px, float py, float pw, string pa, float ps, float cx, float cy, float cw, string ca, float cs, string marker = "") =>
         new(new(tx, ty, tw, ta, ts), new(px, py, pw, pa, ps), new(cx, cy, cw, ca, cs), marker);
 
-    private static void DrawWrapped(Graphics g, string text, LayoutParam param, Color color, Color shadow)
+    private static void DrawWrapped(SKCanvas g, string text, LayoutParam param, SKColor color, SKColor shadow)
     {
         var lines = WrapText(g, NormalizeRenderText(text), param.FontSize, param.Width);
         DrawLines(g, lines, param, color, shadow);
     }
 
-    private static void DrawLines(Graphics g, IReadOnlyList<string> lines, LayoutParam param, Color color, Color shadow, float? lineGap = null)
+    private static void DrawLines(SKCanvas g, IReadOnlyList<string> lines, LayoutParam param, SKColor color, SKColor shadow, float? lineGap = null)
     {
-        using var font = new Font("Arial", param.FontSize, FontStyle.Bold, GraphicsUnit.Pixel);
-        using var shadowBrush = new SolidBrush(shadow);
-        using var brush = new SolidBrush(color);
+        using var textPaint = TextPaint(param.FontSize, color, false);
+        using var shadowPaint = TextPaint(param.FontSize, shadow, true);
         var y = param.Y;
         var gap = lineGap ?? 12f;
         foreach (var line in lines)
         {
-            var size = g.MeasureString(line, font, new PointF(0, 0), StringFormat.GenericTypographic);
+            var width = textPaint.MeasureText(line);
+            var lineHeight = param.FontSize;
             var x = param.Align switch
             {
                 "left" => param.X,
-                "right" => param.X + param.Width - size.Width,
-                _ => param.X + (param.Width - size.Width) / 2f
+                "right" => param.X + param.Width - width,
+                _ => param.X + (param.Width - width) / 2f
             };
 
             foreach (var (dx, dy) in StrokeOffsets())
             {
-                g.DrawString(line, font, shadowBrush, x + dx, y + dy, StringFormat.GenericTypographic);
+                g.DrawText(line, x + dx, y + lineHeight + dy, shadowPaint);
             }
 
-            g.DrawString(line, font, brush, x, y, StringFormat.GenericTypographic);
-            y += size.Height + gap;
+            g.DrawText(line, x, y + lineHeight, textPaint);
+            y += lineHeight + gap;
         }
     }
+
+    private static SKPaint TextPaint(float fontSize, SKColor color, bool stroke)
+    {
+        var paint = new SKPaint
+        {
+            Color = color,
+            IsAntialias = true,
+            TextSize = fontSize,
+            Typeface = SKTypeface.FromFamilyName("Arial", SKFontStyle.Bold),
+            Style = stroke ? SKPaintStyle.Stroke : SKPaintStyle.Fill,
+            StrokeWidth = stroke ? Math.Max(3f, fontSize * 0.09f) : 0f
+        };
+        return paint;
+    }
+
+    private static SKPaint FillPaint(SKColor color) => new()
+    {
+        Color = color,
+        IsAntialias = true,
+        Style = SKPaintStyle.Fill
+    };
+
+    private static SKPaint StrokePaint(SKColor color, float width) => new()
+    {
+        Color = color,
+        IsAntialias = true,
+        Style = SKPaintStyle.Stroke,
+        StrokeWidth = width
+    };
+
+    private static SKColor WithAlpha(SKColor color, byte alpha) => new(color.Red, color.Green, color.Blue, alpha);
 
     private static IEnumerable<(float X, float Y)> StrokeOffsets()
     {
@@ -935,15 +969,15 @@ internal static class OverlayRenderer
         yield return (3f, 4f);
     }
 
-    private static List<string> WrapText(Graphics g, string text, float fontSize, float maxWidth)
+    private static List<string> WrapText(SKCanvas g, string text, float fontSize, float maxWidth)
     {
-        using var font = new Font("Arial", fontSize, FontStyle.Bold, GraphicsUnit.Pixel);
+        using var paint = TextPaint(fontSize, SKColors.White, false);
         var lines = new List<string>();
         var current = "";
         foreach (var word in text.Split(' ', StringSplitOptions.RemoveEmptyEntries))
         {
             var candidate = current.Length == 0 ? word : $"{current} {word}";
-            var width = g.MeasureString(candidate, font, new PointF(0, 0), StringFormat.GenericTypographic).Width;
+            var width = paint.MeasureText(candidate);
             if (width > maxWidth && current.Length > 0)
             {
                 lines.Add(current);
@@ -980,7 +1014,7 @@ internal static class OverlayRenderer
         return NormalizeRenderText($"{spec.Marker}{point}");
     }
 
-    private static (float X, float Y, string Align) PointPosition(Graphics g, ReelScript script, LayoutSpec spec, string layout, int pointIndex)
+    private static (float X, float Y, string Align) PointPosition(SKCanvas g, ReelScript script, LayoutSpec spec, string layout, int pointIndex)
     {
         var blockGap = Math.Max(spec.Point.FontSize * 0.45f, 26f);
 
@@ -1012,7 +1046,7 @@ internal static class OverlayRenderer
             : (spec.Point.X, y, spec.Point.Align);
     }
 
-    private static float CtaPositionY(Graphics g, ReelScript script, LayoutSpec spec, string layout, IReadOnlyList<string> ctaLines)
+    private static float CtaPositionY(SKCanvas g, ReelScript script, LayoutSpec spec, string layout, IReadOnlyList<string> ctaLines)
     {
         var pointBottom = 0f;
         for (var i = 0; i < script.Points.Count; i++)
@@ -1028,7 +1062,7 @@ internal static class OverlayRenderer
         return Math.Min(Math.Max(desiredY, spec.Cta.Y), maxY);
     }
 
-    private static float TextBlockHeight(Graphics g, string text, float fontSize, float width) =>
+    private static float TextBlockHeight(SKCanvas g, string text, float fontSize, float width) =>
         WrapText(g, text, fontSize, width).Count * (fontSize + 12f);
 
     private static float ParagraphHeight(IReadOnlyList<string> lines, float fontSize, float lineGap) =>
