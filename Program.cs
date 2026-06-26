@@ -1145,6 +1145,7 @@ internal sealed record RenderOptions
     public float Duration { get; init; } = Renderer.DefaultReelDuration;
     public string Workers { get; init; } = "auto";
     public BlurStrength Blur { get; init; } = BlurStrength.None;
+    public bool NoAudio { get; init; }
     public string? ErrorLogPath { get; init; }
     public string? TimingLogPath { get; init; }
 }
@@ -1261,9 +1262,11 @@ internal static class Renderer
         }
 
         var videos = ListFiles(options.VideosFolder, [".mp4", ".mov", ".mkv", ".webm"]).OrderBy(_ => Random.Next()).ToList();
-        var music = ListFiles(options.MusicFolder, [".mp3", ".wav", ".m4a", ".aac", ".mp4", ".mov", ".mkv", ".webm"]).OrderBy(_ => Random.Next()).ToList();
+        var music = options.NoAudio
+            ? []
+            : ListFiles(options.MusicFolder, [".mp3", ".wav", ".m4a", ".aac", ".mp4", ".mov", ".mkv", ".webm"]).OrderBy(_ => Random.Next()).ToList();
         log(videos.Count == 0 ? "No background videos found; rendering on solid black background." : $"Found {videos.Count} background video(s)");
-        log(music.Count == 0 ? "No music tracks found; rendering silent videos." : $"Found {music.Count} music track(s)");
+        log(options.NoAudio ? "Audio disabled; rendering silent videos." : music.Count == 0 ? "No music tracks found; rendering silent videos." : $"Found {music.Count} music track(s)");
         log($"Blur mode: {options.Blur.ToArg()}");
 
         var workers = ParseWorkers(options.Workers, scripts.Count);
@@ -1297,7 +1300,7 @@ internal static class Renderer
                     overlays.Add(OverlayRenderer.MakeOverlay(script, script.Points.Count + 1, options.OverlayFolder, stamp));
                 }
 
-                var output = FfmpegRenderer.RenderVideo(script, item.index, videos, music, options.OutputFolder, overlays, duration, ffmpegThreads, options.Blur, cancellationToken);
+                var output = FfmpegRenderer.RenderVideo(script, item.index, videos, music, options.OutputFolder, overlays, duration, ffmpegThreads, options.Blur, options.NoAudio, cancellationToken);
                 Interlocked.Increment(ref success);
                 results.Add((item.index, output, null));
             }
@@ -1506,11 +1509,11 @@ internal static class FfmpegRenderer
     private sealed record BlurBand(int SigmaMin, int SigmaMax, int TintMin, int TintMax);
     private static readonly Random Random = new();
 
-    public static string RenderVideo(ReelScript script, int index, IReadOnlyList<string> videos, IReadOnlyList<string> musicFiles, string outputFolder, IReadOnlyList<string> overlayPaths, float duration, int ffmpegThreads, BlurStrength blurStrength, CancellationToken cancellationToken)
+    public static string RenderVideo(ReelScript script, int index, IReadOnlyList<string> videos, IReadOnlyList<string> musicFiles, string outputFolder, IReadOnlyList<string> overlayPaths, float duration, int ffmpegThreads, BlurStrength blurStrength, bool noAudio, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var videoPath = script.Video ?? (videos.Count > 0 ? videos[index % videos.Count] : null);
-        var musicPath = script.Audio ?? (musicFiles.Count > 0 ? musicFiles[index % musicFiles.Count] : null);
+        var musicPath = noAudio ? null : script.Audio ?? (musicFiles.Count > 0 ? musicFiles[index % musicFiles.Count] : null);
         var revealStarts = BuildRevealStarts(script, overlayPaths.Count, duration);
         var effectiveDuration = Math.Max(duration, (revealStarts.LastOrDefault() + 2f));
         var treatment = ChooseTreatment(blurStrength);
@@ -1846,6 +1849,7 @@ internal static class Cli
             Duration = float.TryParse(map.GetValueOrDefault("duration", Renderer.DefaultReelDuration.ToString()), out var d) ? d : Renderer.DefaultReelDuration,
             Workers = map.GetValueOrDefault("workers", "auto"),
             Blur = BlurStrengthExtensions.Parse(map.GetValueOrDefault("blur", "none")),
+            NoAudio = map.ContainsKey("no-audio") || map.ContainsKey("silent"),
             ErrorLogPath = map.GetValueOrDefault("error-log"),
             TimingLogPath = map.GetValueOrDefault("timing-log")
         };
