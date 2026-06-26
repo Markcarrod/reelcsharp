@@ -1570,7 +1570,7 @@ internal static class FfmpegRenderer
         args.AddRange(["-filter_complex", string.Join(";", filters), "-map", lastVideo]);
         if (musicPath is not null)
         {
-            args.AddRange(["-map", $"{overlayPaths.Count + 1}:a", "-c:a", "aac", "-shortest"]);
+            args.AddRange(["-map", $"{overlayPaths.Count + 1}:a?", "-c:a", "aac", "-shortest"]);
         }
 
         Directory.CreateDirectory(outputFolder);
