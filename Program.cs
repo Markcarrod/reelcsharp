@@ -121,6 +121,7 @@ internal sealed class ReelScript
     public string Code { get; set; } = "";
     public string Niche { get; set; } = "";
     public float? Duration { get; set; }
+    public bool ShortAutoDuration { get; set; }
     public string Layout { get; set; } = "center_stack";
     public bool AllAtOnce { get; set; }
     public string? Video { get; set; }
@@ -226,6 +227,7 @@ internal static partial class ScriptParser
         };
 
         var durationIndex = cells.FindIndex(cell => cell.StartsWith("Duration:", StringComparison.OrdinalIgnoreCase));
+        script.ShortAutoDuration = durationIndex < 0;
         var pointEnd = durationIndex >= 0 ? durationIndex : cells.Count;
         for (var i = 2; i < pointEnd; i++)
         {
@@ -264,12 +266,6 @@ internal static partial class ScriptParser
             foreach (var cell in cells.Skip(2).Where(cell => cell.Length > 0))
             {
                 TryApplyPipeMetadata(script, cell);
-            }
-
-            var code = cells.LastOrDefault(cell => cell.Length > 0 && !IsPipeMetadata(cell));
-            if (!string.IsNullOrWhiteSpace(code) && !string.Equals(code, script.Title, StringComparison.OrdinalIgnoreCase))
-            {
-                script.Code = code;
             }
         }
 
@@ -374,6 +370,7 @@ internal static partial class ScriptParser
             Code = script.Code,
             Niche = script.Niche,
             Duration = script.Duration,
+            ShortAutoDuration = script.ShortAutoDuration,
             Layout = script.Layout,
             AllAtOnce = script.AllAtOnce,
             Video = script.Video,
@@ -1261,7 +1258,7 @@ internal static class Renderer
             return new RenderSummary(0, 0);
         }
 
-        var videos = ListFiles(options.VideosFolder, [".mp4", ".mov", ".mkv", ".webm"]).OrderBy(_ => Random.Next()).ToList();
+        var videos = ListFiles(options.VideosFolder, [".mp4", ".mov", ".mkv", ".webm", ".jpg", ".jpeg", ".png", ".webp", ".bmp"]).OrderBy(_ => Random.Next()).ToList();
         var music = options.NoAudio
             ? []
             : ListFiles(options.MusicFolder, [".mp3", ".wav", ".m4a", ".aac", ".mp4", ".mov", ".mkv", ".webm"]).OrderBy(_ => Random.Next()).ToList();
@@ -1383,6 +1380,11 @@ internal static class Renderer
 
     private static float ResolveReelDuration(ReelScript script, float defaultDuration)
     {
+        if (script.ShortAutoDuration && !script.Duration.HasValue)
+        {
+            return PickDurationInRange(script, new DurationRange(8.0f, 10.0f));
+        }
+
         var range = DurationRangeFor(script);
         var requested = script.Duration ?? defaultDuration;
         if (requested >= range.Min && requested <= range.Max)
@@ -1522,9 +1524,14 @@ internal static class FfmpegRenderer
         var revealStarts = BuildRevealStarts(script, overlayPaths.Count, duration);
         var effectiveDuration = Math.Max(duration, (revealStarts.LastOrDefault() + 2f));
         var treatment = ChooseTreatment(blurStrength);
+        var backgroundIsImage = videoPath is not null && IsImageFile(videoPath);
 
         var args = new List<string> { "-y", "-hide_banner" };
-        if (videoPath is not null)
+        if (videoPath is not null && backgroundIsImage)
+        {
+            args.AddRange(["-loop", "1", "-framerate", "30", "-t", effectiveDuration.ToString("0.###"), "-i", videoPath]);
+        }
+        else if (videoPath is not null)
         {
             args.AddRange(["-stream_loop", "-1", "-i", videoPath]);
         }
@@ -1553,8 +1560,10 @@ internal static class FfmpegRenderer
         }
 
         var filters = new List<string>();
-        var bgChain = videoPath is not null
-            ? $"[0:v]scale=w={OverlayRenderer.Width}:h={OverlayRenderer.Height}:force_original_aspect_ratio=increase,crop={OverlayRenderer.Width}:{OverlayRenderer.Height}"
+        var bgChain = videoPath is not null && backgroundIsImage
+            ? $"[0:v]scale=w={OverlayRenderer.Width}:h={OverlayRenderer.Height}:force_original_aspect_ratio=increase,crop={OverlayRenderer.Width}:{OverlayRenderer.Height},zoompan=z='min(1.0+0.0015*on,1.10)':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={OverlayRenderer.Width}x{OverlayRenderer.Height}:fps=30"
+            : videoPath is not null
+                ? $"[0:v]scale=w={OverlayRenderer.Width}:h={OverlayRenderer.Height}:force_original_aspect_ratio=increase,crop={OverlayRenderer.Width}:{OverlayRenderer.Height}"
             : "[0:v]null";
         bgChain = ApplyTreatment(bgChain, treatment) + "[bg]";
         filters.Add(bgChain);
@@ -1593,6 +1602,12 @@ internal static class FfmpegRenderer
         }
 
         return outputPath;
+    }
+
+    private static bool IsImageFile(string path)
+    {
+        var ext = Path.GetExtension(path).ToLowerInvariant();
+        return ext is ".jpg" or ".jpeg" or ".png" or ".webp" or ".bmp";
     }
 
     private static List<float> BuildRevealStarts(ReelScript script, int overlayCount, float duration)
