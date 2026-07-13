@@ -1568,6 +1568,8 @@ internal static class Renderer
         log($"FFmpeg preset: {ffmpegPreset}");
 
         var success = 0;
+        var completed = 0;
+        var lastProgressLogTicks = 0L;
         var startedAt = Stopwatch.StartNew();
         var results = new ConcurrentBag<(int Index, string? Path, string? Error)>();
         var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = workers, CancellationToken = cancellationToken };
@@ -1601,11 +1603,13 @@ internal static class Renderer
                 var output = FfmpegRenderer.RenderVideo(script, item.index, videos, music, options.OutputFolder, overlays, duration, ffmpegThreads, ffmpegPreset, options.Blur, options.BackgroundStyle, options.NoAudio, cancellationToken, log);
                 Interlocked.Increment(ref success);
                 results.Add((item.index, output, null));
+                LogProgressIfNeeded();
             }
             catch (Exception ex)
             {
                 log($"[Worker] Error script {item.index + 1}/{scripts.Count}: {ex.Message}");
                 results.Add((item.index, null, ex.Message));
+                LogProgressIfNeeded();
             }
         });
 
@@ -1621,6 +1625,31 @@ internal static class Renderer
         }
         log($"Rendered {success}/{scripts.Count} videos successfully.");
         return new RenderSummary(success, scripts.Count);
+
+        void LogProgressIfNeeded()
+        {
+            var done = Interlocked.Increment(ref completed);
+            var nowTicks = Stopwatch.GetTimestamp();
+            var lastTicks = Interlocked.Read(ref lastProgressLogTicks);
+            var secondsSinceLast = lastTicks == 0 ? double.MaxValue : (nowTicks - lastTicks) / (double)Stopwatch.Frequency;
+            if (done < scripts.Count && done % 25 != 0 && secondsSinceLast < 30)
+            {
+                return;
+            }
+
+            if (Interlocked.CompareExchange(ref lastProgressLogTicks, nowTicks, lastTicks) != lastTicks)
+            {
+                return;
+            }
+
+            var elapsed = startedAt.Elapsed;
+            var rate = done / Math.Max(elapsed.TotalSeconds, 0.001);
+            var remainingCount = Math.Max(0, scripts.Count - done);
+            var eta = rate > 0 ? TimeSpan.FromSeconds(remainingCount / rate) : TimeSpan.Zero;
+            var percent = done * 100.0 / Math.Max(1, scripts.Count);
+            log($"[Progress] {done}/{scripts.Count} reels | {percent:0.00}% | elapsed={FormatDuration(elapsed)} | rate={rate:0.00}/s | eta={FormatDuration(eta)} | success={Volatile.Read(ref success)} | errors={done - Volatile.Read(ref success)}");
+            AppendTimingLine(options.TimingLogPath, $"PROGRESS | {Path.GetFileName(options.ScriptPath)} | reels={done}/{scripts.Count} | percent={percent:0.00} | elapsed={FormatDuration(elapsed)} | rate_per_sec={rate:0.00} | eta={FormatDuration(eta)} | success={Volatile.Read(ref success)} | errors={done - Volatile.Read(ref success)}");
+        }
     }
 
     public static List<string> CollectScriptSources(string scriptPath)
