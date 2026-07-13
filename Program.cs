@@ -627,6 +627,7 @@ internal static partial class ScriptParser
 
 internal sealed record LayoutParam(float X, float Y, float Width, string Align, float FontSize);
 internal sealed record LayoutSpec(LayoutParam Title, LayoutParam Point, LayoutParam Cta, string Marker);
+internal sealed record FontChoice(string Path, string Name);
 
 internal static class OverlayRenderer
 {
@@ -660,7 +661,7 @@ internal static class OverlayRenderer
         new(204, 190, 255, 255)  // light lavender
     ];
 
-    public static string MakeOverlay(ReelScript script, int layerIndex, string outputFolder, string stamp)
+    public static string MakeOverlay(ReelScript script, int layerIndex, string outputFolder, string stamp, FontChoice? fontChoice = null)
     {
         Directory.CreateDirectory(outputFolder);
         var layout = ScriptParser.NormalizeLayout(script.Layout);
@@ -671,7 +672,7 @@ internal static class OverlayRenderer
 
         if (!script.AllAtOnce)
         {
-            DrawPopInStayOverlay(g, script, layout, layerIndex);
+            DrawPopInStayOverlay(g, script, layout, layerIndex, fontChoice);
         }
         else if (layerIndex == 0)
         {
@@ -681,7 +682,7 @@ internal static class OverlayRenderer
                 text = $"\"{text.Trim('"')}\"";
             }
 
-            DrawWrapped(g, text, spec.Title, SKColors.White, new SKColor(0, 0, 0, 180));
+            DrawWrapped(g, text, spec.Title, SKColors.White, new SKColor(0, 0, 0, 180), fontChoice);
         }
         else
         {
@@ -690,13 +691,13 @@ internal static class OverlayRenderer
             {
                 var text = PointText(script, spec, layout, pointIndex);
                 var (x, y, align) = PointPosition(g, script, spec, layout, pointIndex);
-                DrawWrapped(g, text, spec.Point with { X = x, Y = y, Align = align }, SKColors.White, new SKColor(0, 0, 0, 185));
+                DrawWrapped(g, text, spec.Point with { X = x, Y = y, Align = align }, SKColors.White, new SKColor(0, 0, 0, 185), fontChoice);
             }
             else if (pointIndex == script.Points.Count && script.Cta.Length > 0)
             {
-                var lines = WrapText(g, NormalizeRenderText(script.Cta), spec.Cta.FontSize, spec.Cta.Width);
+                var lines = WrapText(g, NormalizeRenderText(script.Cta), spec.Cta.FontSize, spec.Cta.Width, fontChoice);
                 var y = CtaPositionY(g, script, spec, layout, lines);
-                DrawLines(g, lines, spec.Cta with { Y = y }, new SKColor(255, 255, 255, 240), new SKColor(0, 0, 0, 180));
+                DrawLines(g, lines, spec.Cta with { Y = y }, new SKColor(255, 255, 255, 240), new SKColor(0, 0, 0, 180), fontChoice);
             }
         }
 
@@ -707,7 +708,7 @@ internal static class OverlayRenderer
         return path;
     }
 
-    private static void DrawPopInStayOverlay(SKCanvas g, ReelScript script, string layout, int layerIndex)
+    private static void DrawPopInStayOverlay(SKCanvas g, ReelScript script, string layout, int layerIndex, FontChoice? fontChoice)
     {
         var readable = GetReadableLayout(script, layout);
         var bodyX = (Width - readable.BodyWidth) / 2f;
@@ -717,9 +718,9 @@ internal static class OverlayRenderer
             titleText = $"\"{titleText.Trim('"')}\"";
         }
 
-        var titleFontSize = FitTitleFontSize(g, titleText, readable);
-        var titleLines = WrapText(g, titleText, titleFontSize, readable.BodyWidth);
-        DrawLines(g, titleLines, new LayoutParam(bodyX, readable.TitleY, readable.BodyWidth, "center", titleFontSize), SKColors.White, new SKColor(0, 0, 0, 210));
+        var titleFontSize = FitTitleFontSize(g, titleText, readable, fontChoice);
+        var titleLines = WrapText(g, titleText, titleFontSize, readable.BodyWidth, fontChoice);
+        DrawLines(g, titleLines, new LayoutParam(bodyX, readable.TitleY, readable.BodyWidth, "center", titleFontSize), SKColors.White, new SKColor(0, 0, 0, 210), fontChoice);
 
         if (layerIndex == 0)
         {
@@ -743,9 +744,9 @@ internal static class OverlayRenderer
         }
 
         var bodyStartSize = readable.LargeText ? Math.Min(85f, titleFontSize - 14f) : Math.Min(script.ShortAutoDuration ? 50f : 53f, titleFontSize - 12f);
-        var fitted = FitBody(g, visiblePoints, readable.BodyWidth, SafeBottom - readable.BodyY, bodyStartSize, readable);
+        var fitted = FitBody(g, visiblePoints, readable.BodyWidth, SafeBottom - readable.BodyY, bodyStartSize, readable, fontChoice);
         DrawReadableTreatment(g, script, readable, bodyX, fitted, currentPointIndex);
-        DrawReadableBody(g, script, readable, bodyX, fitted, currentPointIndex);
+        DrawReadableBody(g, script, readable, bodyX, fitted, currentPointIndex, fontChoice);
     }
 
     private static void DrawReadableTreatment(SKCanvas g, ReelScript script, ReadableLayout readable, float bodyX, FittedBody fitted, int currentPointIndex)
@@ -777,7 +778,7 @@ internal static class OverlayRenderer
         }
     }
 
-    private static void DrawReadableBody(SKCanvas g, ReelScript script, ReadableLayout readable, float bodyX, FittedBody fitted, int currentPointIndex)
+    private static void DrawReadableBody(SKCanvas g, ReelScript script, ReadableLayout readable, float bodyX, FittedBody fitted, int currentPointIndex, FontChoice? fontChoice)
     {
         var accent = CurrentLineColor(script);
         var isFinalTakeaway = currentPointIndex >= script.Points.Count - 1;
@@ -803,7 +804,7 @@ internal static class OverlayRenderer
 
             var paragraphX = readable.Variant == ReadableVariant.LeftStory ? bodyX + 26f : bodyX;
             var paragraphWidth = readable.Variant == ReadableVariant.LeftStory ? readable.BodyWidth - 26f : readable.BodyWidth;
-            DrawLines(g, fitted.Paragraphs[i], new LayoutParam(paragraphX, y, paragraphWidth, readable.BodyAlign, fitted.FontSize), color, new SKColor(0, 0, 0, (byte)Math.Min(225, opacity)), fitted.LineGap);
+            DrawLines(g, fitted.Paragraphs[i], new LayoutParam(paragraphX, y, paragraphWidth, readable.BodyAlign, fitted.FontSize), color, new SKColor(0, 0, 0, (byte)Math.Min(225, opacity)), fontChoice, fitted.LineGap);
 
             if (readable.Variant == ReadableVariant.Divider && i < fitted.Paragraphs.Count - 1)
             {
@@ -960,13 +961,13 @@ internal static class OverlayRenderer
         return y;
     }
 
-    private static float FitTitleFontSize(SKCanvas g, string title, ReadableLayout readable)
+    private static float FitTitleFontSize(SKCanvas g, string title, ReadableLayout readable, FontChoice? fontChoice = null)
     {
         var maxTitle = readable.LargeText ? 108f : 83f;
         var minTitle = readable.LargeText ? 83f : 63f;
         for (var fontSize = maxTitle; fontSize >= minTitle; fontSize -= 2f)
         {
-            if (TextBlockHeight(g, title, fontSize, readable.BodyWidth) <= readable.BodyY - readable.TitleY - 34f)
+            if (TextBlockHeight(g, title, fontSize, readable.BodyWidth, fontChoice) <= readable.BodyY - readable.TitleY - 34f)
             {
                 return fontSize;
             }
@@ -975,14 +976,14 @@ internal static class OverlayRenderer
         return minTitle;
     }
 
-    private static FittedBody FitBody(SKCanvas g, IReadOnlyList<string> points, float width, float maxHeight, float startFontSize, ReadableLayout readable)
+    private static FittedBody FitBody(SKCanvas g, IReadOnlyList<string> points, float width, float maxHeight, float startFontSize, ReadableLayout readable, FontChoice? fontChoice = null)
     {
         var minBodySize = readable.LargeText ? 48f : 30f;
         for (var fontSize = startFontSize; fontSize >= minBodySize; fontSize -= 2f)
         {
             var lineGap = Math.Max(10f, fontSize * readable.LineGapScale);
             var paragraphGap = Math.Max(30f, fontSize * readable.ParagraphGapScale);
-            var paragraphs = points.Select(point => WrapText(g, point, fontSize, width)).ToList();
+            var paragraphs = points.Select(point => WrapText(g, point, fontSize, width, fontChoice)).ToList();
             var height = paragraphs.Sum(lines => ParagraphHeight(lines, fontSize, lineGap)) + paragraphGap * Math.Max(0, paragraphs.Count - 1);
             if (height <= maxHeight)
             {
@@ -992,7 +993,7 @@ internal static class OverlayRenderer
 
         var minimumLineGap = 8f;
         var minimumParagraphGap = 22f;
-        return new FittedBody(minBodySize, minimumLineGap, minimumParagraphGap, points.Select(point => WrapText(g, point, minBodySize, width)).ToList());
+        return new FittedBody(minBodySize, minimumLineGap, minimumParagraphGap, points.Select(point => WrapText(g, point, minBodySize, width, fontChoice)).ToList());
     }
 
     public static LayoutSpec GetLayoutSpec(string layout) =>
@@ -1028,17 +1029,17 @@ internal static class OverlayRenderer
     private static LayoutSpec Spec(float tx, float ty, float tw, string ta, float ts, float px, float py, float pw, string pa, float ps, float cx, float cy, float cw, string ca, float cs, string marker = "") =>
         new(new(tx, ty, tw, ta, ts), new(px, py, pw, pa, ps), new(cx, cy, cw, ca, cs), marker);
 
-    private static void DrawWrapped(SKCanvas g, string text, LayoutParam param, SKColor color, SKColor shadow)
+    private static void DrawWrapped(SKCanvas g, string text, LayoutParam param, SKColor color, SKColor shadow, FontChoice? fontChoice = null)
     {
-        var lines = WrapText(g, NormalizeRenderText(text), param.FontSize, param.Width);
-        DrawLines(g, lines, param, color, shadow);
+        var lines = WrapText(g, NormalizeRenderText(text), param.FontSize, param.Width, fontChoice);
+        DrawLines(g, lines, param, color, shadow, fontChoice);
     }
 
-    private static void DrawLines(SKCanvas g, IReadOnlyList<string> lines, LayoutParam param, SKColor color, SKColor shadow, float? lineGap = null)
+    private static void DrawLines(SKCanvas g, IReadOnlyList<string> lines, LayoutParam param, SKColor color, SKColor shadow, FontChoice? fontChoice = null, float? lineGap = null)
     {
-        using var textPaint = TextPaint(param.FontSize, color, SKPaintStyle.Fill);
-        using var strokePaint = TextPaint(param.FontSize, WithAlpha(SKColors.Black, 190), SKPaintStyle.Stroke, Math.Clamp(param.FontSize * 0.035f, 2f, 3f));
-        using var shadowPaint = TextPaint(param.FontSize, WithAlpha(shadow, (byte)Math.Min(145, (int)shadow.Alpha)), SKPaintStyle.Fill, blurSigma: 5.5f);
+        using var textPaint = TextPaint(param.FontSize, color, SKPaintStyle.Fill, fontChoice);
+        using var strokePaint = TextPaint(param.FontSize, WithAlpha(SKColors.Black, 190), SKPaintStyle.Stroke, fontChoice, Math.Clamp(param.FontSize * 0.035f, 2f, 3f));
+        using var shadowPaint = TextPaint(param.FontSize, WithAlpha(shadow, (byte)Math.Min(145, (int)shadow.Alpha)), SKPaintStyle.Fill, fontChoice, blurSigma: 5.5f);
         var y = param.Y;
         var gap = lineGap ?? 12f;
         foreach (var line in lines)
@@ -1059,14 +1060,14 @@ internal static class OverlayRenderer
         }
     }
 
-    private static SKPaint TextPaint(float fontSize, SKColor color, SKPaintStyle style, float strokeWidth = 0f, float blurSigma = 0f)
+    private static SKPaint TextPaint(float fontSize, SKColor color, SKPaintStyle style, FontChoice? fontChoice = null, float strokeWidth = 0f, float blurSigma = 0f)
     {
         var paint = new SKPaint
         {
             Color = color,
             IsAntialias = true,
             TextSize = fontSize,
-            Typeface = SKTypeface.FromFamilyName("Arial", SKFontStyle.Bold),
+            Typeface = FontManager.GetTypeface(fontChoice),
             Style = style,
             StrokeWidth = strokeWidth
         };
@@ -1095,9 +1096,9 @@ internal static class OverlayRenderer
 
     private static SKColor WithAlpha(SKColor color, byte alpha) => new(color.Red, color.Green, color.Blue, alpha);
 
-    private static List<string> WrapText(SKCanvas g, string text, float fontSize, float maxWidth)
+    private static List<string> WrapText(SKCanvas g, string text, float fontSize, float maxWidth, FontChoice? fontChoice = null)
     {
-        using var paint = TextPaint(fontSize, SKColors.White, SKPaintStyle.Fill);
+        using var paint = TextPaint(fontSize, SKColors.White, SKPaintStyle.Fill, fontChoice);
         var lines = new List<string>();
         var current = "";
         foreach (var word in text.Split(' ', StringSplitOptions.RemoveEmptyEntries))
@@ -1188,8 +1189,8 @@ internal static class OverlayRenderer
         return Math.Min(Math.Max(desiredY, spec.Cta.Y), maxY);
     }
 
-    private static float TextBlockHeight(SKCanvas g, string text, float fontSize, float width) =>
-        WrapText(g, text, fontSize, width).Count * (fontSize + 12f);
+    private static float TextBlockHeight(SKCanvas g, string text, float fontSize, float width, FontChoice? fontChoice = null) =>
+        WrapText(g, text, fontSize, width, fontChoice).Count * (fontSize + 12f);
 
     private static float ParagraphHeight(IReadOnlyList<string> lines, float fontSize, float lineGap) =>
         lines.Count == 0 ? 0 : lines.Count * fontSize + Math.Max(0, lines.Count - 1) * lineGap;
@@ -1266,6 +1267,7 @@ internal sealed record RenderOptions
     public required string MusicFolder { get; init; }
     public required string OutputFolder { get; init; }
     public required string OverlayFolder { get; init; }
+    public required string FontsFolder { get; init; }
     public float Duration { get; init; } = Renderer.DefaultReelDuration;
     public string Workers { get; init; } = "auto";
     public BlurStrength Blur { get; init; } = BlurStrength.None;
@@ -1274,6 +1276,77 @@ internal sealed record RenderOptions
     public bool NoAudio { get; init; }
     public string? ErrorLogPath { get; init; }
     public string? TimingLogPath { get; init; }
+}
+
+internal static class FontManager
+{
+    private static readonly ConcurrentDictionary<string, SKTypeface?> TypefaceCache = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly SKTypeface FallbackTypeface = SKTypeface.FromFamilyName("Arial", SKFontStyle.Bold);
+
+    public static IReadOnlyList<FontChoice> LoadFonts(string folder, Action<string> log)
+    {
+        if (string.IsNullOrWhiteSpace(folder) || !Directory.Exists(folder))
+        {
+            log($"Font folder not found; using Arial fallback: {folder}");
+            return [];
+        }
+
+        var fonts = Directory.EnumerateFiles(folder, "*.*", SearchOption.AllDirectories)
+            .Where(path => Path.GetExtension(path).Equals(".ttf", StringComparison.OrdinalIgnoreCase) ||
+                Path.GetExtension(path).Equals(".otf", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+            .Select(path => new FontChoice(path, Path.GetFileNameWithoutExtension(path)))
+            .ToList();
+
+        log(fonts.Count == 0
+            ? $"No .ttf/.otf fonts found in {folder}; using Arial fallback."
+            : $"Found {fonts.Count} font(s) in {folder}; selecting a stable random font per reel.");
+        return fonts;
+    }
+
+    public static FontChoice? PickFont(IReadOnlyList<FontChoice> fonts, ReelScript script)
+    {
+        if (fonts.Count == 0)
+        {
+            return null;
+        }
+
+        var key = $"{script.Code}|{script.Title}|{script.Niche}|font";
+        return fonts[Math.Abs(StableHash(key)) % fonts.Count];
+    }
+
+    public static SKTypeface GetTypeface(FontChoice? fontChoice)
+    {
+        if (fontChoice is null)
+        {
+            return FallbackTypeface;
+        }
+
+        var typeface = TypefaceCache.GetOrAdd(fontChoice.Path, path =>
+        {
+            try
+            {
+                return SKTypeface.FromFile(path);
+            }
+            catch
+            {
+                return null;
+            }
+        });
+
+        return typeface ?? FallbackTypeface;
+    }
+
+    private static int StableHash(string key)
+    {
+        var hash = 17;
+        foreach (var ch in key)
+        {
+            hash = unchecked(hash * 31 + ch);
+        }
+
+        return hash == int.MinValue ? 0 : hash;
+    }
 }
 
 internal enum BackgroundStyleMode
@@ -1472,6 +1545,7 @@ internal static class Renderer
         log(options.NoAudio ? "Audio disabled; rendering silent videos." : music.Count == 0 ? "No music tracks found; rendering silent videos." : $"Found {music.Count} music track(s)");
         log($"Blur mode: {options.Blur.ToArg()}");
         log($"Background style: {options.BackgroundStyle.Mode}");
+        var fonts = FontManager.LoadFonts(options.FontsFolder, log);
 
         if (!string.IsNullOrWhiteSpace(options.BackgroundPreviewFolder))
         {
@@ -1505,18 +1579,23 @@ internal static class Renderer
                 var script = ScriptParser.CollapseDuplicateTitlePoint(item.script);
                 var stamp = MillisecondStamp();
                 var duration = ResolveReelDuration(script, options.Duration);
+                var fontChoice = FontManager.PickFont(fonts, script);
                 log($"[Worker] Rendering script {item.index + 1}/{scripts.Count} from {Path.GetFileName(options.ScriptPath)}: \"{script.Title}\"");
+                if (fontChoice is not null)
+                {
+                    log($"[Font] Reel: {(script.Code.Length > 0 ? script.Code : script.Title)} | {fontChoice.Name}");
+                }
 
-                var overlays = new List<string> { OverlayRenderer.MakeOverlay(script, 0, options.OverlayFolder, stamp) };
+                var overlays = new List<string> { OverlayRenderer.MakeOverlay(script, 0, options.OverlayFolder, stamp, fontChoice) };
                 for (var pointIndex = 0; pointIndex < script.Points.Count; pointIndex++)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    overlays.Add(OverlayRenderer.MakeOverlay(script, pointIndex + 1, options.OverlayFolder, stamp));
+                    overlays.Add(OverlayRenderer.MakeOverlay(script, pointIndex + 1, options.OverlayFolder, stamp, fontChoice));
                 }
 
                 if (script.Cta.Length > 0)
                 {
-                    overlays.Add(OverlayRenderer.MakeOverlay(script, script.Points.Count + 1, options.OverlayFolder, stamp));
+                    overlays.Add(OverlayRenderer.MakeOverlay(script, script.Points.Count + 1, options.OverlayFolder, stamp, fontChoice));
                 }
 
                 var output = FfmpegRenderer.RenderVideo(script, item.index, videos, music, options.OutputFolder, overlays, duration, ffmpegThreads, ffmpegPreset, options.Blur, options.BackgroundStyle, options.NoAudio, cancellationToken, log);
@@ -2212,6 +2291,7 @@ internal static class Cli
             MusicFolder = map.GetValueOrDefault("music", "input/music"),
             OutputFolder = map.GetValueOrDefault("output", "output/videos"),
             OverlayFolder = map.GetValueOrDefault("overlays", "output/overlays"),
+            FontsFolder = map.GetValueOrDefault("fonts", "/home/kayan/Documents/Fonts"),
             Duration = float.TryParse(map.GetValueOrDefault("duration", Renderer.DefaultReelDuration.ToString()), out var d) ? d : Renderer.DefaultReelDuration,
             Workers = map.GetValueOrDefault("workers", "auto"),
             Blur = BlurStrengthExtensions.Parse(map.GetValueOrDefault("blur", "none")),
