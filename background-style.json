@@ -1,0 +1,14 @@
+{
+  "Mode": "AdaptivePreset",
+  "EnableBrightnessCorrection": true,
+  "EnableContrastCorrection": true,
+  "EnableSaturationCorrection": true,
+  "EnableOverlay": true,
+  "EnableVignette": true,
+  "EnableGradient": true,
+  "MinimumBlur": 2,
+  "MaximumBlur": 12,
+  "MinimumOverlayOpacity": 0.08,
+  "MaximumOverlayOpacity": 0.38,
+  "PreservePresetByReelId": true
+}

@@ -226,6 +226,11 @@ internal static partial class ScriptParser
             Layout = PipeRowLayoutRotation[index % PipeRowLayoutRotation.Length]
         };
 
+        if (TryParseLabeledPipeRow(cells, index, script))
+        {
+            return script;
+        }
+
         var durationIndex = cells.FindIndex(cell => cell.StartsWith("Duration:", StringComparison.OrdinalIgnoreCase));
         script.ShortAutoDuration = durationIndex < 0;
         var pointEnd = durationIndex >= 0 ? durationIndex : cells.Count;
@@ -272,16 +277,110 @@ internal static partial class ScriptParser
         return script;
     }
 
+    private static bool TryParseLabeledPipeRow(IReadOnlyList<string> cells, int index, ReelScript script)
+    {
+        var titleIndex = -1;
+        for (var i = 0; i < cells.Count; i++)
+        {
+            if (Regex.IsMatch(cells[i], @"^\s*TITLE\s*:", RegexOptions.IgnoreCase))
+            {
+                titleIndex = i;
+                break;
+            }
+        }
+
+        if (titleIndex < 0)
+        {
+            return false;
+        }
+
+        script.Title = ExtractLabeledValue(cells[titleIndex]);
+        if (string.IsNullOrWhiteSpace(script.Title))
+        {
+            script.Title = cells.Count > 1 && cells[1].Length > 0 ? cells[1] : $"Video {index + 1}";
+        }
+
+        script.ShortAutoDuration = true;
+        script.Layout = "center_stack";
+
+        for (var i = titleIndex + 1; i < cells.Count; i++)
+        {
+            var cell = cells[i];
+            if (cell.Length == 0 || TryApplyPipeMetadata(script, cell))
+            {
+                continue;
+            }
+
+            if (cell.StartsWith("Duration:", StringComparison.OrdinalIgnoreCase))
+            {
+                var match = Regex.Match(cell, @"\d+(?:\.\d+)?");
+                if (match.Success && float.TryParse(match.Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var duration))
+                {
+                    script.Duration = duration;
+                    script.ShortAutoDuration = false;
+                }
+
+                continue;
+            }
+
+            if (Regex.IsMatch(cell, @"^\s*LINE[_\s-]*\d+\s*:", RegexOptions.IgnoreCase))
+            {
+                var point = ExtractLabeledValue(cell);
+                if (point.Length > 0)
+                {
+                    script.Points.Add(point);
+                    script.PointPauseCountsBefore.Add(0);
+                }
+
+                continue;
+            }
+
+            if (Regex.IsMatch(cell, @"^\s*(CTA|TAKEAWAY)\s*:", RegexOptions.IgnoreCase))
+            {
+                script.Cta = ExtractLabeledValue(cell);
+                continue;
+            }
+
+            if (IsLikelyPipeCode(cell) && string.IsNullOrWhiteSpace(script.Code))
+            {
+                script.Code = cell;
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(script.Code))
+        {
+            var lastUsefulCell = cells.LastOrDefault(cell => cell.Length > 0 && !cell.Contains(':'));
+            if (!string.IsNullOrWhiteSpace(lastUsefulCell) && lastUsefulCell != script.Niche && lastUsefulCell != script.Title)
+            {
+                script.Code = lastUsefulCell;
+            }
+        }
+
+        return true;
+    }
+
+    private static string ExtractLabeledValue(string cell)
+    {
+        var separator = cell.IndexOf(':');
+        return separator >= 0 ? cell[(separator + 1)..].Trim() : cell.Trim();
+    }
+
+    private static bool IsLikelyPipeCode(string cell) =>
+        Regex.IsMatch(cell, @"^[A-Za-z0-9_-]{5,64}$") &&
+        !cell.Equals("audio", StringComparison.OrdinalIgnoreCase) &&
+        !cell.Equals("video", StringComparison.OrdinalIgnoreCase);
+
     private static bool TryApplyPipeMetadata(ReelScript script, string cell)
     {
-        var match = Regex.Match(cell, @"^\s*(audio|video|vid)\s*:\s*(.+?)\s*$", RegexOptions.IgnoreCase);
+        var match = Regex.Match(cell, @"^\s*(audio|video|vid|img|image)\s*(?::|-)\s*(.+?)\s*$", RegexOptions.IgnoreCase);
         if (!match.Success)
         {
             return false;
         }
 
         var value = NormalizeInputPath(match.Groups[2].Value.Trim());
-        if (match.Groups[1].Value.Equals("audio", StringComparison.OrdinalIgnoreCase))
+        var kind = match.Groups[1].Value;
+        if (kind.Equals("audio", StringComparison.OrdinalIgnoreCase))
         {
             script.Audio = value.Length == 0 ? null : value;
         }
@@ -294,7 +393,7 @@ internal static partial class ScriptParser
     }
 
     private static bool IsPipeMetadata(string cell) =>
-        Regex.IsMatch(cell, @"^\s*(audio|video|vid)\s*:", RegexOptions.IgnoreCase);
+        Regex.IsMatch(cell, @"^\s*(audio|video|vid|img|image)\s*(?::|-)", RegexOptions.IgnoreCase);
 
     private static string NormalizeInputPath(string path)
     {
@@ -319,6 +418,12 @@ internal static partial class ScriptParser
     {
         var slug = Regex.Replace(value, @"[^a-zA-Z0-9]+", "-").Trim('-').ToLowerInvariant();
         return slug.Length == 0 ? "reel" : slug;
+    }
+
+    public static string SafeCodeFileStem(string value)
+    {
+        var stem = Regex.Replace(value.Trim(), @"[^a-zA-Z0-9_-]+", "-").Trim('-');
+        return stem.Length == 0 ? "reel" : stem;
     }
 
     public static string NormalizeLayout(string value)
@@ -544,7 +649,7 @@ internal static class OverlayRenderer
         Spotlight,
         MinimalFloating
     }
-    private sealed record ReadableLayout(ReadableVariant Variant, float TitleY, float BodyY, float BodyWidth, string BodyAlign, float LineGapScale, float ParagraphGapScale);
+    private sealed record ReadableLayout(ReadableVariant Variant, float TitleY, float BodyY, float BodyWidth, string BodyAlign, float LineGapScale, float ParagraphGapScale, bool LargeText);
     private static readonly SKColor[] CurrentLineAccentColors =
     [
         new(255, 217, 106, 255), // warm yellow
@@ -637,13 +742,19 @@ internal static class OverlayRenderer
             return;
         }
 
-        var fitted = FitBody(g, visiblePoints, readable.BodyWidth, SafeBottom - readable.BodyY, Math.Min(42f, titleFontSize + 2f), readable);
+        var bodyStartSize = readable.LargeText ? Math.Min(85f, titleFontSize - 14f) : Math.Min(script.ShortAutoDuration ? 50f : 53f, titleFontSize - 12f);
+        var fitted = FitBody(g, visiblePoints, readable.BodyWidth, SafeBottom - readable.BodyY, bodyStartSize, readable);
         DrawReadableTreatment(g, script, readable, bodyX, fitted, currentPointIndex);
         DrawReadableBody(g, script, readable, bodyX, fitted, currentPointIndex);
     }
 
     private static void DrawReadableTreatment(SKCanvas g, ReelScript script, ReadableLayout readable, float bodyX, FittedBody fitted, int currentPointIndex)
     {
+        if (script.ShortAutoDuration)
+        {
+            return;
+        }
+
         var totalHeight = BodyHeight(fitted);
         using var subtleBrush = FillPaint(new SKColor(0, 0, 0, 54));
         using var linePen = StrokePaint(new SKColor(255, 255, 255, 120), 2f);
@@ -745,19 +856,42 @@ internal static class OverlayRenderer
     {
         var variant = PickReadableVariant(script, layout);
         var align = variant == ReadableVariant.CenterStack || PrefersCenteredBody(script) ? "center" : "left";
+        if (script.ShortAutoDuration)
+        {
+            var largeText = IsTinyShortScript(script);
+            return variant switch
+            {
+                ReadableVariant.CenterStack => new(variant, SafeTop + 18f, Height * 0.285f, Width * 0.76f, "center", 0.34f, 0.72f, largeText),
+                ReadableVariant.LeftStory => new(variant, SafeTop + 18f, Height * 0.285f, Width * 0.74f, "left", 0.32f, 0.68f, largeText),
+                ReadableVariant.Focus => new(variant, SafeTop + 18f, Height * 0.285f, Width * 0.74f, align, 0.32f, 0.68f, largeText),
+                ReadableVariant.Card => new(variant, SafeTop + 20f, Height * 0.295f, Width * 0.72f, align, 0.30f, 0.62f, largeText),
+                ReadableVariant.Divider => new(variant, SafeTop + 18f, Height * 0.285f, Width * 0.76f, align, 0.30f, 0.60f, largeText),
+                ReadableVariant.Spotlight => new(variant, SafeTop + 20f, Height * 0.295f, Width * 0.74f, align, 0.30f, 0.62f, largeText),
+                ReadableVariant.MinimalFloating => new(variant, SafeTop + 28f, Height * 0.330f, Width * 0.70f, align, 0.36f, 0.78f, largeText),
+                _ => new(variant, SafeTop + 18f, Height * 0.285f, Width * 0.74f, align, 0.32f, 0.68f, largeText)
+            };
+        }
+
         return variant switch
         {
-            ReadableVariant.CenterStack => new(variant, SafeTop + 12f, Height * 0.250f, Width * 0.74f, "center", 0.38f, 1.06f),
-            ReadableVariant.LeftStory => new(variant, SafeTop + 10f, Height * 0.255f, Width * 0.72f, "left", 0.36f, 1.02f),
-            ReadableVariant.Focus => new(variant, SafeTop + 14f, Height * 0.255f, Width * 0.73f, align, 0.38f, 1.05f),
-            ReadableVariant.Card => new(variant, SafeTop + 18f, Height * 0.265f, Width * 0.70f, align, 0.35f, 0.96f),
-            ReadableVariant.Timeline => new(variant, SafeTop + 12f, Height * 0.250f, Width * 0.70f, "left", 0.34f, 0.92f),
-            ReadableVariant.VerticalIndicator => new(variant, SafeTop + 16f, Height * 0.260f, Width * 0.70f, "left", 0.35f, 0.98f),
-            ReadableVariant.Divider => new(variant, SafeTop + 10f, Height * 0.255f, Width * 0.75f, align, 0.32f, 0.82f),
-            ReadableVariant.Spotlight => new(variant, SafeTop + 16f, Height * 0.260f, Width * 0.72f, align, 0.34f, 0.94f),
-            ReadableVariant.MinimalFloating => new(variant, SafeTop + 24f, Height * 0.315f, Width * 0.68f, align, 0.42f, 1.18f),
-            _ => new(variant, SafeTop + 12f, Height * 0.250f, BodyWidth, align, 0.36f, 1.02f)
+            ReadableVariant.CenterStack => new(variant, SafeTop + 12f, Height * 0.250f, Width * 0.74f, "center", 0.38f, 1.06f, false),
+            ReadableVariant.LeftStory => new(variant, SafeTop + 10f, Height * 0.255f, Width * 0.72f, "left", 0.36f, 1.02f, false),
+            ReadableVariant.Focus => new(variant, SafeTop + 14f, Height * 0.255f, Width * 0.73f, align, 0.38f, 1.05f, false),
+            ReadableVariant.Card => new(variant, SafeTop + 18f, Height * 0.265f, Width * 0.70f, align, 0.35f, 0.96f, false),
+            ReadableVariant.Timeline => new(variant, SafeTop + 12f, Height * 0.250f, Width * 0.70f, "left", 0.34f, 0.92f, false),
+            ReadableVariant.VerticalIndicator => new(variant, SafeTop + 16f, Height * 0.260f, Width * 0.70f, "left", 0.35f, 0.98f, false),
+            ReadableVariant.Divider => new(variant, SafeTop + 10f, Height * 0.255f, Width * 0.75f, align, 0.32f, 0.82f, false),
+            ReadableVariant.Spotlight => new(variant, SafeTop + 16f, Height * 0.260f, Width * 0.72f, align, 0.34f, 0.94f, false),
+            ReadableVariant.MinimalFloating => new(variant, SafeTop + 24f, Height * 0.315f, Width * 0.68f, align, 0.42f, 1.18f, false),
+            _ => new(variant, SafeTop + 12f, Height * 0.250f, BodyWidth, align, 0.36f, 1.02f, false)
         };
+    }
+
+    private static bool IsTinyShortScript(ReelScript script)
+    {
+        var longestPoint = script.Points.Count == 0 ? 0 : script.Points.Max(point => NormalizeRenderText(point).Length);
+        var totalPointChars = script.Points.Sum(point => NormalizeRenderText(point).Length);
+        return script.Points.Count <= 4 && longestPoint <= 18 && totalPointChars <= 58;
     }
 
     private static ReadableVariant PickReadableVariant(ReelScript script, string layout)
@@ -828,7 +962,9 @@ internal static class OverlayRenderer
 
     private static float FitTitleFontSize(SKCanvas g, string title, ReadableLayout readable)
     {
-        for (var fontSize = 66f; fontSize >= 52f; fontSize -= 2f)
+        var maxTitle = readable.LargeText ? 108f : 83f;
+        var minTitle = readable.LargeText ? 83f : 63f;
+        for (var fontSize = maxTitle; fontSize >= minTitle; fontSize -= 2f)
         {
             if (TextBlockHeight(g, title, fontSize, readable.BodyWidth) <= readable.BodyY - readable.TitleY - 34f)
             {
@@ -836,12 +972,13 @@ internal static class OverlayRenderer
             }
         }
 
-        return 52f;
+        return minTitle;
     }
 
     private static FittedBody FitBody(SKCanvas g, IReadOnlyList<string> points, float width, float maxHeight, float startFontSize, ReadableLayout readable)
     {
-        for (var fontSize = startFontSize; fontSize >= 26f; fontSize -= 2f)
+        var minBodySize = readable.LargeText ? 48f : 30f;
+        for (var fontSize = startFontSize; fontSize >= minBodySize; fontSize -= 2f)
         {
             var lineGap = Math.Max(10f, fontSize * readable.LineGapScale);
             var paragraphGap = Math.Max(30f, fontSize * readable.ParagraphGapScale);
@@ -855,7 +992,7 @@ internal static class OverlayRenderer
 
         var minimumLineGap = 8f;
         var minimumParagraphGap = 22f;
-        return new FittedBody(26f, minimumLineGap, minimumParagraphGap, points.Select(point => WrapText(g, point, 26f, width)).ToList());
+        return new FittedBody(minBodySize, minimumLineGap, minimumParagraphGap, points.Select(point => WrapText(g, point, minBodySize, width)).ToList());
     }
 
     public static LayoutSpec GetLayoutSpec(string layout) =>
@@ -899,8 +1036,9 @@ internal static class OverlayRenderer
 
     private static void DrawLines(SKCanvas g, IReadOnlyList<string> lines, LayoutParam param, SKColor color, SKColor shadow, float? lineGap = null)
     {
-        using var textPaint = TextPaint(param.FontSize, color, false);
-        using var shadowPaint = TextPaint(param.FontSize, shadow, true);
+        using var textPaint = TextPaint(param.FontSize, color, SKPaintStyle.Fill);
+        using var strokePaint = TextPaint(param.FontSize, WithAlpha(SKColors.Black, 190), SKPaintStyle.Stroke, Math.Clamp(param.FontSize * 0.035f, 2f, 3f));
+        using var shadowPaint = TextPaint(param.FontSize, WithAlpha(shadow, (byte)Math.Min(145, (int)shadow.Alpha)), SKPaintStyle.Fill, blurSigma: 5.5f);
         var y = param.Y;
         var gap = lineGap ?? 12f;
         foreach (var line in lines)
@@ -914,17 +1052,14 @@ internal static class OverlayRenderer
                 _ => param.X + (param.Width - width) / 2f
             };
 
-            foreach (var (dx, dy) in StrokeOffsets())
-            {
-                g.DrawText(line, x + dx, y + lineHeight + dy, shadowPaint);
-            }
-
+            g.DrawText(line, x, y + lineHeight + 4f, shadowPaint);
+            g.DrawText(line, x, y + lineHeight, strokePaint);
             g.DrawText(line, x, y + lineHeight, textPaint);
             y += lineHeight + gap;
         }
     }
 
-    private static SKPaint TextPaint(float fontSize, SKColor color, bool stroke)
+    private static SKPaint TextPaint(float fontSize, SKColor color, SKPaintStyle style, float strokeWidth = 0f, float blurSigma = 0f)
     {
         var paint = new SKPaint
         {
@@ -932,9 +1067,14 @@ internal static class OverlayRenderer
             IsAntialias = true,
             TextSize = fontSize,
             Typeface = SKTypeface.FromFamilyName("Arial", SKFontStyle.Bold),
-            Style = stroke ? SKPaintStyle.Stroke : SKPaintStyle.Fill,
-            StrokeWidth = stroke ? Math.Max(3f, fontSize * 0.09f) : 0f
+            Style = style,
+            StrokeWidth = strokeWidth
         };
+        if (blurSigma > 0f)
+        {
+            paint.MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, blurSigma);
+        }
+
         return paint;
     }
 
@@ -955,22 +1095,9 @@ internal static class OverlayRenderer
 
     private static SKColor WithAlpha(SKColor color, byte alpha) => new(color.Red, color.Green, color.Blue, alpha);
 
-    private static IEnumerable<(float X, float Y)> StrokeOffsets()
-    {
-        yield return (-3f, 0f);
-        yield return (3f, 0f);
-        yield return (0f, -3f);
-        yield return (0f, 3f);
-        yield return (-2f, -2f);
-        yield return (2f, -2f);
-        yield return (-2f, 2f);
-        yield return (2f, 2f);
-        yield return (3f, 4f);
-    }
-
     private static List<string> WrapText(SKCanvas g, string text, float fontSize, float maxWidth)
     {
-        using var paint = TextPaint(fontSize, SKColors.White, false);
+        using var paint = TextPaint(fontSize, SKColors.White, SKPaintStyle.Fill);
         var lines = new List<string>();
         var current = "";
         foreach (var word in text.Split(' ', StringSplitOptions.RemoveEmptyEntries))
@@ -1142,14 +1269,89 @@ internal sealed record RenderOptions
     public float Duration { get; init; } = Renderer.DefaultReelDuration;
     public string Workers { get; init; } = "auto";
     public BlurStrength Blur { get; init; } = BlurStrength.None;
+    public BackgroundStyleOptions BackgroundStyle { get; init; } = new();
+    public string? BackgroundPreviewFolder { get; init; }
     public bool NoAudio { get; init; }
     public string? ErrorLogPath { get; init; }
     public string? TimingLogPath { get; init; }
 }
 
+internal enum BackgroundStyleMode
+{
+    AdaptivePreset,
+    RandomPreset
+}
+
+internal enum BackgroundStylePresetName
+{
+    LightBlur,
+    BrightenedBackground,
+    DarkOverlay,
+    CenterGradient,
+    Vignette,
+    SoftDesaturation,
+    SharpCinematic
+}
+
+internal sealed record BackgroundStyleOptions
+{
+    public BackgroundStyleMode Mode { get; init; } = BackgroundStyleMode.AdaptivePreset;
+    public bool EnableBrightnessCorrection { get; init; } = true;
+    public bool EnableContrastCorrection { get; init; } = true;
+    public bool EnableSaturationCorrection { get; init; } = true;
+    public bool EnableOverlay { get; init; } = true;
+    public bool EnableVignette { get; init; } = true;
+    public bool EnableGradient { get; init; } = true;
+    public int MinimumBlur { get; init; } = 0;
+    public int MaximumBlur { get; init; } = 12;
+    public float MinimumOverlayOpacity { get; init; } = 0.08f;
+    public float MaximumOverlayOpacity { get; init; } = 0.38f;
+    public bool PreservePresetByReelId { get; init; } = true;
+
+    public static BackgroundStyleOptions Load(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        {
+            return new BackgroundStyleOptions();
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<BackgroundStyleOptions>(File.ReadAllText(path, Encoding.UTF8), new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true,
+                Converters = { new JsonStringEnumConverter() }
+            }) ?? new BackgroundStyleOptions();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Background style config warning: {ex.Message}");
+            return new BackgroundStyleOptions();
+        }
+    }
+}
+
+internal sealed record ImageAnalysisResult(float AverageLuminance, float Contrast, float Saturation)
+{
+    public bool IsVeryDark => AverageLuminance < 0.20f;
+    public bool IsDark => AverageLuminance < 0.38f;
+    public bool IsVeryBright => AverageLuminance > 0.82f;
+    public bool IsBright => AverageLuminance > 0.66f;
+}
+
+internal sealed record BackgroundStylePreset(
+    BackgroundStylePresetName Name,
+    int BlurSigma,
+    float Brightness,
+    float Contrast,
+    float Saturation,
+    float OverlayOpacity,
+    bool UseCenterGradient,
+    bool UseVignette);
+
 internal sealed record RenderSummary(int SuccessCount, int TotalCount)
 {
-    public bool FullySuccessful => TotalCount > 0 && SuccessCount == TotalCount;
+    public bool FullySuccessful => TotalCount == 0 || SuccessCount == TotalCount;
 }
 
 internal static class Renderer
@@ -1195,7 +1397,11 @@ internal static class Renderer
                 summary = RenderScriptFile(options with { ScriptPath = scriptFile, OutputFolder = outputRoot, OverlayFolder = overlayRoot }, cancellationToken, log);
                 grandSuccess += summary.SuccessCount;
                 grandTotal += summary.TotalCount;
-                if (!summary.FullySuccessful)
+                if (!string.IsNullOrWhiteSpace(options.BackgroundPreviewFolder))
+                {
+                    status = "PREVIEW";
+                }
+                else if (!summary.FullySuccessful)
                 {
                     status = "PARTIAL";
                     AppendError(options.ErrorLogPath, scriptFile, $"Partial failure: {summary.SuccessCount}/{summary.TotalCount} reels succeeded");
@@ -1265,6 +1471,20 @@ internal static class Renderer
         log(videos.Count == 0 ? "No background videos found; rendering on solid black background." : $"Found {videos.Count} background video(s)");
         log(options.NoAudio ? "Audio disabled; rendering silent videos." : music.Count == 0 ? "No music tracks found; rendering silent videos." : $"Found {music.Count} music track(s)");
         log($"Blur mode: {options.Blur.ToArg()}");
+        log($"Background style: {options.BackgroundStyle.Mode}");
+
+        if (!string.IsNullOrWhiteSpace(options.BackgroundPreviewFolder))
+        {
+            var sourceImage = videos.FirstOrDefault(FfmpegRenderer.IsImageFile);
+            if (sourceImage is null)
+            {
+                throw new InvalidOperationException("--background-preview requires at least one image in --videos.");
+            }
+
+            FfmpegRenderer.CreateBackgroundPreviews(sourceImage, options.BackgroundPreviewFolder, options.BackgroundStyle, log);
+            log("Background previews created; skipping reel render.");
+            return new RenderSummary(0, 0);
+        }
 
         var workers = ParseWorkers(options.Workers, scripts.Count);
         var ffmpegThreads = FfmpegThreadsForWorkers(workers);
@@ -1299,7 +1519,7 @@ internal static class Renderer
                     overlays.Add(OverlayRenderer.MakeOverlay(script, script.Points.Count + 1, options.OverlayFolder, stamp));
                 }
 
-                var output = FfmpegRenderer.RenderVideo(script, item.index, videos, music, options.OutputFolder, overlays, duration, ffmpegThreads, ffmpegPreset, options.Blur, options.NoAudio, cancellationToken);
+                var output = FfmpegRenderer.RenderVideo(script, item.index, videos, music, options.OutputFolder, overlays, duration, ffmpegThreads, ffmpegPreset, options.Blur, options.BackgroundStyle, options.NoAudio, cancellationToken, log);
                 Interlocked.Increment(ref success);
                 results.Add((item.index, output, null));
             }
@@ -1511,20 +1731,27 @@ internal static class Renderer
 
 internal static class FfmpegRenderer
 {
-    private enum BackgroundVariant { Normal, TintOnly, GradientTint, CardOverlay }
-    private sealed record Treatment(BackgroundVariant Variant, int? BlurSigma, float TintOpacity, float SecondaryTintOpacity, float CardOpacity);
-    private sealed record BlurBand(int SigmaMin, int SigmaMax, int TintMin, int TintMax);
+    private sealed record Treatment(BackgroundStylePreset Preset);
     private static readonly Random Random = new();
 
-    public static string RenderVideo(ReelScript script, int index, IReadOnlyList<string> videos, IReadOnlyList<string> musicFiles, string outputFolder, IReadOnlyList<string> overlayPaths, float duration, int ffmpegThreads, string ffmpegPreset, BlurStrength blurStrength, bool noAudio, CancellationToken cancellationToken)
+    public static string RenderVideo(ReelScript script, int index, IReadOnlyList<string> videos, IReadOnlyList<string> musicFiles, string outputFolder, IReadOnlyList<string> overlayPaths, float duration, int ffmpegThreads, string ffmpegPreset, BlurStrength blurStrength, BackgroundStyleOptions backgroundStyle, bool noAudio, CancellationToken cancellationToken, Action<string> log)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var videoPath = script.Video ?? (videos.Count > 0 ? videos[index % videos.Count] : null);
         var musicPath = noAudio ? null : script.Audio ?? (musicFiles.Count > 0 ? musicFiles[index % musicFiles.Count] : null);
         var revealStarts = BuildRevealStarts(script, overlayPaths.Count, duration);
         var effectiveDuration = Math.Max(duration, (revealStarts.LastOrDefault() + 2f));
-        var treatment = ChooseTreatment(blurStrength);
         var backgroundIsImage = videoPath is not null && IsImageFile(videoPath);
+        var reelId = script.Code.Length > 0 ? script.Code : script.Title;
+        var treatment = backgroundIsImage
+            ? ChooseImageTreatment(videoPath!, reelId, backgroundStyle)
+            : ChooseVideoTreatment(blurStrength, reelId);
+        if (backgroundIsImage)
+        {
+            var analysis = AnalyzeImage(videoPath!);
+            var preset = treatment.Preset;
+            log($"[Background] Reel: {reelId} | luminance={analysis.AverageLuminance:0.00} | contrast={analysis.Contrast:0.00} | preset={preset.Name} | blur={preset.BlurSigma} | brightness={preset.Brightness:+0%;-0%;0%} | overlay={preset.OverlayOpacity:0%}");
+        }
 
         var args = new List<string> { "-y", "-hide_banner" };
         if (videoPath is not null && backgroundIsImage)
@@ -1591,7 +1818,7 @@ internal static class FfmpegRenderer
         }
 
         Directory.CreateDirectory(outputFolder);
-        var safeTitle = ScriptParser.Slugify(script.Code.Length > 0 ? script.Code : script.Title);
+        var safeTitle = script.Code.Length > 0 ? ScriptParser.SafeCodeFileStem(script.Code) : ScriptParser.Slugify(script.Title);
         var outputPath = Path.Combine(outputFolder, $"{safeTitle}.mp4");
         args.AddRange(["-threads", Math.Max(1, ffmpegThreads).ToString(), "-c:v", "libx264", "-preset", ffmpegPreset, "-tune", "fastdecode", "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-t", effectiveDuration.ToString("0.###"), outputPath]);
 
@@ -1604,7 +1831,7 @@ internal static class FfmpegRenderer
         return outputPath;
     }
 
-    private static bool IsImageFile(string path)
+    public static bool IsImageFile(string path)
     {
         var ext = Path.GetExtension(path).ToLowerInvariant();
         return ext is ".jpg" or ".jpeg" or ".png" or ".webp" or ".bmp";
@@ -1704,71 +1931,178 @@ internal static class FfmpegRenderer
         }
     }
 
-    private static Treatment ChooseTreatment(BlurStrength blurStrength)
+    private static Treatment ChooseVideoTreatment(BlurStrength blurStrength, string reelId)
     {
-        BlurBand Light() => new(3, 5, 18, 25);
-        BlurBand Middle() => new(6, 8, 26, 34);
-        BlurBand Heavy() => new(9, 12, 35, 42);
-        BlurBand RandomBand() => Random.Next(100) switch { < 50 => Light(), < 80 => Middle(), _ => Heavy() };
-        float Opacity(int min, int max) => Random.Next(min, max + 1) / 100f;
-        Treatment FromBand(BlurBand band)
+        var random = new Random(StableHash($"{reelId}|video-background"));
+        var blur = blurStrength switch { BlurStrength.Light => 4, BlurStrength.Middle => 7, BlurStrength.Heavy => 10, _ => 0 };
+        return new Treatment(new BackgroundStylePreset(BackgroundStylePresetName.DarkOverlay, blur, 0f, 1f, 1f, RandomRange(random, 0.14f, 0.25f), false, false));
+    }
+
+    private static Treatment ChooseImageTreatment(string imagePath, string reelId, BackgroundStyleOptions options)
+    {
+        var analysis = AnalyzeImage(imagePath);
+        var random = options.PreservePresetByReelId
+            ? new Random(StableHash($"{reelId}|image-background"))
+            : new Random();
+        var name = options.Mode == BackgroundStyleMode.RandomPreset
+            ? Enum.GetValues<BackgroundStylePresetName>()[random.Next(Enum.GetValues<BackgroundStylePresetName>().Length)]
+            : SelectAdaptivePreset(analysis, random);
+        return new Treatment(CreatePreset(name, analysis, options, random));
+    }
+
+    private static BackgroundStylePresetName SelectAdaptivePreset(ImageAnalysisResult analysis, Random random)
+    {
+        if (analysis.IsVeryDark) return random.Next(2) == 0 ? BackgroundStylePresetName.BrightenedBackground : BackgroundStylePresetName.SharpCinematic;
+        if (analysis.IsDark) return random.Next(2) == 0 ? BackgroundStylePresetName.LightBlur : BackgroundStylePresetName.BrightenedBackground;
+        if (analysis.IsVeryBright) return random.Next(2) == 0 ? BackgroundStylePresetName.DarkOverlay : BackgroundStylePresetName.CenterGradient;
+        if (analysis.IsBright) return random.Next(2) == 0 ? BackgroundStylePresetName.CenterGradient : BackgroundStylePresetName.Vignette;
+        return new[] { BackgroundStylePresetName.LightBlur, BackgroundStylePresetName.CenterGradient, BackgroundStylePresetName.Vignette, BackgroundStylePresetName.SoftDesaturation }[random.Next(4)];
+    }
+
+    private static BackgroundStylePreset CreatePreset(BackgroundStylePresetName name, ImageAnalysisResult analysis, BackgroundStyleOptions options, Random random)
+    {
+        var preset = name switch
         {
-            var roll = Random.Next(100);
-            var sigma = Random.Next(band.SigmaMin, band.SigmaMax + 1);
-            var tint = Opacity(band.TintMin, band.TintMax);
-            return roll < 12
-                ? new(BackgroundVariant.GradientTint, sigma, Math.Max(tint - 0.05f, 0.12f), Math.Min(tint + 0.07f, 0.48f), 0)
-                : roll < 24
-                    ? new(BackgroundVariant.CardOverlay, sigma, Math.Max(tint - 0.08f, 0.10f), 0, Opacity(12, 22))
-                    : new(BackgroundVariant.Normal, sigma, tint, 0, 0);
+            BackgroundStylePresetName.LightBlur => new BackgroundStylePreset(name, RandomInt(random, 2, 4), RandomRange(random, .08f, .15f), RandomRange(random, 1.03f, 1.08f), 1f, RandomRange(random, .08f, .15f), false, false),
+            BackgroundStylePresetName.BrightenedBackground => new BackgroundStylePreset(name, RandomInt(random, 0, 2), RandomRange(random, .12f, .22f), 1.05f, RandomRange(random, .97f, 1.03f), RandomRange(random, .15f, .22f), false, false),
+            BackgroundStylePresetName.DarkOverlay => new BackgroundStylePreset(name, RandomInt(random, 0, 1), .05f, 1f, 1f, RandomRange(random, .25f, .38f), false, false),
+            BackgroundStylePresetName.CenterGradient => new BackgroundStylePreset(name, RandomInt(random, 2, 4), analysis.IsDark ? .12f : RandomRange(random, 0f, .08f), 1.03f, 1f, RandomRange(random, .15f, .24f), true, false),
+            BackgroundStylePresetName.Vignette => new BackgroundStylePreset(name, RandomInt(random, 1, 3), RandomRange(random, .08f, .15f), 1.03f, 1f, RandomRange(random, .08f, .15f), false, true),
+            BackgroundStylePresetName.SoftDesaturation => new BackgroundStylePreset(name, RandomInt(random, 2, 4), .10f, 1.05f, RandomRange(random, .70f, .85f), RandomRange(random, .12f, .20f), false, false),
+            _ => new BackgroundStylePreset(BackgroundStylePresetName.SharpCinematic, 0, analysis.IsDark ? .14f : .05f, analysis.Contrast > .25f ? .96f : 1f, 1f, RandomRange(random, .12f, .20f), true, false)
+        };
+
+        var blur = Math.Clamp(preset.BlurSigma, options.MinimumBlur, options.MaximumBlur);
+        var overlay = Math.Clamp(preset.OverlayOpacity, options.MinimumOverlayOpacity, options.MaximumOverlayOpacity);
+        return preset with
+        {
+            BlurSigma = blur,
+            Brightness = options.EnableBrightnessCorrection ? preset.Brightness : 0f,
+            Contrast = options.EnableContrastCorrection ? preset.Contrast : 1f,
+            Saturation = options.EnableSaturationCorrection ? preset.Saturation : 1f,
+            OverlayOpacity = options.EnableOverlay ? overlay : 0f,
+            UseCenterGradient = preset.UseCenterGradient && options.EnableGradient,
+            UseVignette = preset.UseVignette && options.EnableVignette
+        };
+    }
+
+    private static ImageAnalysisResult AnalyzeImage(string path)
+    {
+        using var bitmap = SKBitmap.Decode(path);
+        if (bitmap is null || bitmap.Width == 0 || bitmap.Height == 0)
+        {
+            return new ImageAnalysisResult(.5f, .15f, .5f);
         }
 
-        if (blurStrength == BlurStrength.None)
+        var step = Math.Max(1, Math.Max(bitmap.Width, bitmap.Height) / 160);
+        var luminanceSum = 0d;
+        var luminanceSquaredSum = 0d;
+        var saturationSum = 0d;
+        var count = 0;
+        for (var y = 0; y < bitmap.Height; y += step)
+        for (var x = 0; x < bitmap.Width; x += step)
         {
-            var roll = Random.Next(100);
-            if (roll < 10)
-            {
-                return new(BackgroundVariant.TintOnly, null, Opacity(18, 42), 0, 0);
-            }
-
-            var band = RandomBand();
-            var tint = Opacity(band.TintMin, band.TintMax);
-            var sigma = Random.Next(band.SigmaMin, band.SigmaMax + 1);
-            return roll < 20
-                ? new(BackgroundVariant.GradientTint, sigma, Math.Max(tint - 0.06f, 0.12f), Math.Min(tint + 0.09f, 0.48f), 0)
-                : roll < 30
-                    ? new(BackgroundVariant.CardOverlay, sigma, Math.Max(tint - 0.10f, 0.10f), 0, Opacity(12, 22))
-                    : new(BackgroundVariant.Normal, sigma, tint, 0, 0);
+            var pixel = bitmap.GetPixel(x, y);
+            var r = pixel.Red / 255d;
+            var g = pixel.Green / 255d;
+            var b = pixel.Blue / 255d;
+            var lum = .2126d * r + .7152d * g + .0722d * b;
+            luminanceSum += lum;
+            luminanceSquaredSum += lum * lum;
+            var max = Math.Max(r, Math.Max(g, b));
+            var min = Math.Min(r, Math.Min(g, b));
+            saturationSum += max <= 0 ? 0 : (max - min) / max;
+            count++;
         }
 
-        return FromBand(blurStrength switch
-        {
-            BlurStrength.Light => Light(),
-            BlurStrength.Middle => Middle(),
-            _ => Heavy()
-        });
+        var average = luminanceSum / Math.Max(count, 1);
+        var variance = Math.Max(0, luminanceSquaredSum / Math.Max(count, 1) - average * average);
+        return new ImageAnalysisResult((float)average, (float)Math.Sqrt(variance), (float)(saturationSum / Math.Max(count, 1)));
     }
 
     private static string ApplyTreatment(string chain, Treatment treatment)
     {
-        if (treatment.BlurSigma.HasValue)
+        var preset = treatment.Preset;
+        if (preset.BlurSigma > 0)
         {
-            var sigma = treatment.BlurSigma.Value;
-            var steps = sigma <= 5 ? 1 : sigma <= 8 ? 2 : 3;
-            chain += $",gblur=sigma={sigma}:steps={steps}";
+            var steps = preset.BlurSigma <= 4 ? 1 : preset.BlurSigma <= 8 ? 2 : 3;
+            chain += $",gblur=sigma={preset.BlurSigma}:steps={steps}";
         }
 
-        return treatment.Variant switch
+        if (Math.Abs(preset.Brightness) > .001f || Math.Abs(preset.Contrast - 1f) > .001f || Math.Abs(preset.Saturation - 1f) > .001f)
         {
-            BackgroundVariant.GradientTint => chain +
-                $",drawbox=x=0:y=0:w={OverlayRenderer.Width}:h={OverlayRenderer.Height * 11 / 20}:t=fill:color=black@{treatment.TintOpacity:0.00}" +
-                $",drawbox=x=0:y={OverlayRenderer.Height * 11 / 20}:w={OverlayRenderer.Width}:h={OverlayRenderer.Height - OverlayRenderer.Height * 11 / 20}:t=fill:color=black@{treatment.SecondaryTintOpacity:0.00}",
-            BackgroundVariant.CardOverlay => chain +
-                $",drawbox=t=fill:color=black@{treatment.TintOpacity:0.00}" +
-                $",drawbox=x=70:y=240:w={OverlayRenderer.Width - 140}:h={OverlayRenderer.Height - 480}:t=fill:color=black@{treatment.CardOpacity:0.00}",
-            _ => chain + $",drawbox=t=fill:color=black@{treatment.TintOpacity:0.00}"
-        };
+            chain += $",eq=brightness={preset.Brightness:0.000}:contrast={preset.Contrast:0.000}:saturation={preset.Saturation:0.000}";
+        }
+        if (preset.UseVignette)
+        {
+            chain += ",vignette=angle=0.35:eval=init";
+        }
+        if (preset.UseCenterGradient)
+        {
+            chain = AddSmoothCenterGradient(chain, preset.OverlayOpacity);
+        }
+        else if (preset.OverlayOpacity > 0)
+        {
+            chain += $",drawbox=t=fill:color=black@{preset.OverlayOpacity:0.000}";
+        }
+        return chain;
     }
+
+    private static string AddSmoothCenterGradient(string chain, float maxOpacity)
+    {
+        const int bands = 12;
+        var top = (int)(OverlayRenderer.Height * .18f);
+        var height = (int)(OverlayRenderer.Height * .62f);
+        var bandHeight = height / bands + 1;
+        for (var i = 0; i < bands; i++)
+        {
+            var distanceFromCenter = Math.Abs((i + .5f) / bands - .5f) * 2f;
+            var opacity = maxOpacity * (1f - distanceFromCenter * distanceFromCenter);
+            chain += $",drawbox=x=0:y={top + i * bandHeight}:w={OverlayRenderer.Width}:h={bandHeight}:t=fill:color=black@{opacity:0.000}";
+        }
+        return chain;
+    }
+
+    private static int RandomInt(Random random, int minimum, int maximum) => random.Next(minimum, maximum + 1);
+    private static float RandomRange(Random random, float minimum, float maximum) => minimum + (float)random.NextDouble() * (maximum - minimum);
+
+    public static void CreateBackgroundPreviews(string imagePath, string outputFolder, BackgroundStyleOptions options, Action<string> log)
+    {
+        Directory.CreateDirectory(outputFolder);
+        var analysis = AnalyzeImage(imagePath);
+        var reelId = Path.GetFileNameWithoutExtension(imagePath);
+        var names = Enum.GetValues<BackgroundStylePresetName>();
+        foreach (var name in names)
+        {
+            var preset = CreatePreset(name, analysis, options with { Mode = BackgroundStyleMode.RandomPreset }, new Random(StableHash($"{reelId}|preview|{name}")));
+            CreatePreview(imagePath, Path.Combine(outputFolder, $"preview_{ToPreviewName(name)}.jpg"), new Treatment(preset));
+        }
+
+        var adaptive = ChooseImageTreatment(imagePath, reelId, options);
+        CreatePreview(imagePath, Path.Combine(outputFolder, "preview_adaptive.jpg"), adaptive);
+        log($"Created {names.Length + 1} background previews in {outputFolder} (luminance={analysis.AverageLuminance:0.00}).");
+    }
+
+    private static void CreatePreview(string imagePath, string outputPath, Treatment treatment)
+    {
+        var chain = ApplyTreatment($"scale=w={OverlayRenderer.Width}:h={OverlayRenderer.Height}:force_original_aspect_ratio=increase,crop={OverlayRenderer.Width}:{OverlayRenderer.Height}", treatment);
+        var result = RunProcess("ffmpeg", ["-y", "-hide_banner", "-i", imagePath, "-vf", chain, "-frames:v", "1", "-q:v", "2", outputPath], CancellationToken.None);
+        if (result.ExitCode != 0)
+        {
+            throw new InvalidOperationException($"Could not create background preview '{Path.GetFileName(outputPath)}': {result.Output}");
+        }
+    }
+
+    private static string ToPreviewName(BackgroundStylePresetName name) => name switch
+    {
+        BackgroundStylePresetName.LightBlur => "light_blur",
+        BackgroundStylePresetName.BrightenedBackground => "brightened",
+        BackgroundStylePresetName.DarkOverlay => "dark_overlay",
+        BackgroundStylePresetName.CenterGradient => "center_gradient",
+        BackgroundStylePresetName.Vignette => "vignette",
+        BackgroundStylePresetName.SoftDesaturation => "desaturated",
+        _ => "sharp"
+    };
 
     private static (int ExitCode, string Output) RunProcess(string fileName, IEnumerable<string> args, CancellationToken cancellationToken)
     {
@@ -1859,6 +2193,18 @@ internal static class Cli
             throw new InvalidOperationException("--script is required for CLI mode");
         }
 
+        var styleConfigPath = map.GetValueOrDefault("background-config", Path.Combine(Directory.GetCurrentDirectory(), "background-style.json"));
+        var backgroundStyle = BackgroundStyleOptions.Load(styleConfigPath);
+        if (map.TryGetValue("background-style", out var requestedMode))
+        {
+            backgroundStyle = backgroundStyle with
+            {
+                Mode = requestedMode.Equals("random", StringComparison.OrdinalIgnoreCase) || requestedMode.Equals("randompreset", StringComparison.OrdinalIgnoreCase)
+                    ? BackgroundStyleMode.RandomPreset
+                    : BackgroundStyleMode.AdaptivePreset
+            };
+        }
+
         return new RenderOptions
         {
             ScriptPath = script,
@@ -1869,6 +2215,8 @@ internal static class Cli
             Duration = float.TryParse(map.GetValueOrDefault("duration", Renderer.DefaultReelDuration.ToString()), out var d) ? d : Renderer.DefaultReelDuration,
             Workers = map.GetValueOrDefault("workers", "auto"),
             Blur = BlurStrengthExtensions.Parse(map.GetValueOrDefault("blur", "none")),
+            BackgroundStyle = backgroundStyle,
+            BackgroundPreviewFolder = map.GetValueOrDefault("background-preview"),
             NoAudio = map.ContainsKey("no-audio") || map.ContainsKey("silent"),
             ErrorLogPath = map.GetValueOrDefault("error-log"),
             TimingLogPath = map.GetValueOrDefault("timing-log")
