@@ -233,7 +233,7 @@ internal static partial class ScriptParser
 
         var durationIndex = cells.FindIndex(cell => cell.StartsWith("Duration:", StringComparison.OrdinalIgnoreCase));
         script.ShortAutoDuration = durationIndex < 0;
-        var pointEnd = durationIndex >= 0 ? durationIndex : cells.Count;
+        var pointEnd = durationIndex >= 0 ? durationIndex : Math.Min(cells.Count, 8);
         for (var i = 2; i < pointEnd; i++)
         {
             if (cells[i].Length == 0)
@@ -268,9 +268,17 @@ internal static partial class ScriptParser
         }
         else
         {
-            foreach (var cell in cells.Skip(2).Where(cell => cell.Length > 0))
+            foreach (var cell in cells.Skip(pointEnd).Where(cell => cell.Length > 0))
             {
-                TryApplyPipeMetadata(script, cell);
+                if (TryApplyPipeMetadata(script, cell))
+                {
+                    continue;
+                }
+
+                if (string.IsNullOrWhiteSpace(script.Code) && IsLikelyPipeCode(cell))
+                {
+                    script.Code = cell;
+                }
             }
         }
 
@@ -2042,7 +2050,7 @@ internal static class FfmpegRenderer
     private static Treatment ChooseVideoTreatment(BlurStrength blurStrength, string reelId)
     {
         var random = new Random(StableHash($"{reelId}|video-background"));
-        var blur = blurStrength switch { BlurStrength.Light => 4, BlurStrength.Middle => 7, BlurStrength.Heavy => 10, _ => 0 };
+        var blur = blurStrength switch { BlurStrength.Light => 4, BlurStrength.Middle => 7, BlurStrength.Heavy => 10, _ => 3 };
         return new Treatment(new BackgroundStylePreset(BackgroundStylePresetName.DarkOverlay, blur, 0f, 1f, 1f, RandomRange(random, 0.14f, 0.25f), false, false));
     }
 
