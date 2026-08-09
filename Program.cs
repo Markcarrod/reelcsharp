@@ -1718,7 +1718,10 @@ internal static class Renderer
     {
         if (script.ShortAutoDuration && !script.Duration.HasValue)
         {
-            return PickDurationInRange(script, new DurationRange(8.0f, 10.0f));
+            var textLength = script.Title.Length + script.Points.Sum(point => point.Length);
+            var min = textLength >= 420 ? 18.0f : textLength >= 300 ? 16.5f : 15.0f;
+            var max = textLength >= 420 ? 20.0f : textLength >= 300 ? 19.0f : 17.0f;
+            return PickDurationInRange(script, new DurationRange(min, max));
         }
 
         var range = DurationRangeFor(script);
@@ -2050,7 +2053,7 @@ internal static class FfmpegRenderer
     private static Treatment ChooseVideoTreatment(BlurStrength blurStrength, string reelId)
     {
         var random = new Random(StableHash($"{reelId}|video-background"));
-        var blur = blurStrength switch { BlurStrength.Light => 4, BlurStrength.Middle => 7, BlurStrength.Heavy => 10, _ => 3 };
+        var blur = blurStrength switch { BlurStrength.Light => 4, BlurStrength.Middle => 7, BlurStrength.Heavy => 10, _ => 7 };
         return new Treatment(new BackgroundStylePreset(BackgroundStylePresetName.DarkOverlay, blur, 0f, 1f, 1f, RandomRange(random, 0.14f, 0.25f), false, false));
     }
 
