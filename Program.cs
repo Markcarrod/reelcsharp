@@ -1282,6 +1282,7 @@ internal sealed record RenderOptions
     public BackgroundStyleOptions BackgroundStyle { get; init; } = new();
     public string? BackgroundPreviewFolder { get; init; }
     public bool NoAudio { get; init; }
+    public bool RemoveRenderedLines { get; init; }
     public string? ErrorLogPath { get; init; }
     public string? TimingLogPath { get; init; }
 }
@@ -1442,6 +1443,7 @@ internal static class Renderer
     public const float MaxReelDuration = 24.9f;
     private static readonly Random Random = new();
     private static readonly object TimingFileLock = new();
+    private static readonly object ScriptLineRemovalLock = new();
 
     public static RenderSummary RenderSource(RenderOptions options, CancellationToken cancellationToken, Action<string> log)
     {
@@ -1545,6 +1547,12 @@ internal static class Renderer
             return new RenderSummary(0, 0);
         }
 
+        var sourceRows = options.RemoveRenderedLines ? LoadRemovableScriptRows(options.ScriptPath) : [];
+        if (options.RemoveRenderedLines)
+        {
+            log("Remove-rendered-lines mode enabled; successful rows will be deleted from the input file.");
+        }
+
         var videos = ListFiles(options.VideosFolder, [".mp4", ".mov", ".mkv", ".webm", ".jpg", ".jpeg", ".png", ".webp", ".bmp"]).OrderBy(_ => Random.Next()).ToList();
         var music = options.NoAudio
             ? []
@@ -1611,6 +1619,10 @@ internal static class Renderer
                 var output = FfmpegRenderer.RenderVideo(script, item.index, videos, music, options.OutputFolder, overlays, duration, ffmpegThreads, ffmpegPreset, options.Blur, options.BackgroundStyle, options.NoAudio, cancellationToken, log);
                 Interlocked.Increment(ref success);
                 results.Add((item.index, output, null));
+                if (options.RemoveRenderedLines)
+                {
+                    RemoveRenderedScriptRow(options.ScriptPath, item.index, sourceRows, log);
+                }
                 LogProgressIfNeeded();
             }
             catch (Exception ex)
@@ -1657,6 +1669,43 @@ internal static class Renderer
             var percent = done * 100.0 / Math.Max(1, scripts.Count);
             log($"[Progress] {done}/{scripts.Count} reels | {percent:0.00}% | elapsed={FormatDuration(elapsed)} | rate={rate:0.00}/s | eta={FormatDuration(eta)} | success={Volatile.Read(ref success)} | errors={done - Volatile.Read(ref success)}");
             AppendTimingLine(options.TimingLogPath, $"PROGRESS | {Path.GetFileName(options.ScriptPath)} | reels={done}/{scripts.Count} | percent={percent:0.00} | elapsed={FormatDuration(elapsed)} | rate_per_sec={rate:0.00} | eta={FormatDuration(eta)} | success={Volatile.Read(ref success)} | errors={done - Volatile.Read(ref success)}");
+        }
+    }
+
+    private static List<string> LoadRemovableScriptRows(string scriptPath) =>
+        File.ReadAllLines(scriptPath, Encoding.UTF8)
+            .Select(line => line.Trim().TrimStart('\ufeff').Trim())
+            .Where(line => line.Length > 0 && !Regex.IsMatch(line, @"^\s*---+\s*$") && IsLikelyRenderableScriptLine(line))
+            .ToList();
+
+    private static bool IsLikelyRenderableScriptLine(string line)
+    {
+        var cells = line.Split('|');
+        return cells.Length >= 5 && cells.Count(cell => cell.Trim().Length > 0) >= 4;
+    }
+
+    private static void RemoveRenderedScriptRow(string scriptPath, int scriptIndex, IReadOnlyList<string> sourceRows, Action<string> log)
+    {
+        if (scriptIndex < 0 || scriptIndex >= sourceRows.Count)
+        {
+            log($"[Input] Could not remove rendered row {scriptIndex + 1}; source row index is out of range.");
+            return;
+        }
+
+        var targetRow = sourceRows[scriptIndex];
+        lock (ScriptLineRemovalLock)
+        {
+            var lines = File.ReadAllLines(scriptPath, Encoding.UTF8).ToList();
+            var removeIndex = lines.FindIndex(line => string.Equals(line.Trim().TrimStart('\ufeff').Trim(), targetRow, StringComparison.Ordinal));
+            if (removeIndex < 0)
+            {
+                log($"[Input] Rendered row already removed or not found: {scriptIndex + 1}");
+                return;
+            }
+
+            lines.RemoveAt(removeIndex);
+            File.WriteAllLines(scriptPath, lines, Encoding.UTF8);
+            log($"[Input] Removed rendered row {scriptIndex + 1}; remaining lines={lines.Count(line => line.Trim().Length > 0)}");
         }
     }
 
@@ -2338,6 +2387,7 @@ internal static class Cli
             BackgroundStyle = backgroundStyle,
             BackgroundPreviewFolder = map.GetValueOrDefault("background-preview"),
             NoAudio = map.ContainsKey("no-audio") || map.ContainsKey("silent"),
+            RemoveRenderedLines = map.ContainsKey("remove-rendered-lines"),
             ErrorLogPath = map.GetValueOrDefault("error-log"),
             TimingLogPath = map.GetValueOrDefault("timing-log")
         };
