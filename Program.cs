@@ -233,7 +233,9 @@ internal static partial class ScriptParser
 
         var durationIndex = cells.FindIndex(cell => cell.StartsWith("Duration:", StringComparison.OrdinalIgnoreCase));
         script.ShortAutoDuration = durationIndex < 0;
-        var pointEnd = durationIndex >= 0 ? durationIndex : Math.Min(cells.Count, 8);
+        var trailingCodeIndex = durationIndex < 0 && cells.Count > 2 && IsLikelyPipeCode(cells[^1]) ? cells.Count - 1 : -1;
+        var textEnd = durationIndex >= 0 ? durationIndex : trailingCodeIndex >= 0 ? trailingCodeIndex : cells.Count;
+        var pointEnd = Math.Min(textEnd, 8);
         for (var i = 2; i < pointEnd; i++)
         {
             if (cells[i].Length == 0)
