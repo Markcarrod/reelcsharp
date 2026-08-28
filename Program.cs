@@ -1285,6 +1285,9 @@ internal sealed record RenderOptions
     public string? BackgroundPreviewFolder { get; init; }
     public bool NoAudio { get; init; }
     public bool RemoveRenderedLines { get; init; }
+    public bool VideosByNiche { get; init; }
+    public bool OutputByNiche { get; init; }
+    public string NicheOutputSuffix { get; init; } = "";
     public string? ErrorLogPath { get; init; }
     public string? TimingLogPath { get; init; }
 }
@@ -1556,10 +1559,17 @@ internal static class Renderer
         }
 
         var videos = ListFiles(options.VideosFolder, [".mp4", ".mov", ".mkv", ".webm", ".jpg", ".jpeg", ".png", ".webp", ".bmp"]).OrderBy(_ => Random.Next()).ToList();
+        var videosByNiche = options.VideosByNiche ? LoadVideosByNiche(options.VideosFolder, log) : [];
         var music = options.NoAudio
             ? []
             : ListFiles(options.MusicFolder, [".mp3", ".wav", ".m4a", ".aac", ".mp4", ".mov", ".mkv", ".webm"]).OrderBy(_ => Random.Next()).ToList();
         log(videos.Count == 0 ? "No background videos found; rendering on solid black background." : $"Found {videos.Count} background video(s)");
+        if (options.VideosByNiche)
+        {
+            log(videosByNiche.Count == 0
+                ? "No niche background folders found; falling back to the full --videos folder."
+                : $"Niche video routing enabled for {videosByNiche.Count} folder(s).");
+        }
         log(options.NoAudio ? "Audio disabled; rendering silent videos." : music.Count == 0 ? "No music tracks found; rendering silent videos." : $"Found {music.Count} music track(s)");
         log($"Blur mode: {options.Blur.ToArg()}");
         log($"Background style: {options.BackgroundStyle.Mode}");
@@ -1606,19 +1616,29 @@ internal static class Renderer
                     log($"[Font] Reel: {(script.Code.Length > 0 ? script.Code : script.Title)} | {fontChoice.Name}");
                 }
 
-                var overlays = new List<string> { OverlayRenderer.MakeOverlay(script, 0, options.OverlayFolder, stamp, fontChoice) };
+                var outputFolder = options.OutputByNiche
+                    ? Path.Combine(options.OutputFolder, SafeNicheFolderName(script.Niche, options.NicheOutputSuffix))
+                    : options.OutputFolder;
+                var overlayFolder = options.OutputByNiche
+                    ? Path.Combine(options.OverlayFolder, SafeNicheFolderName(script.Niche, options.NicheOutputSuffix))
+                    : options.OverlayFolder;
+                var scriptVideos = options.VideosByNiche
+                    ? ResolveVideosForNiche(script.Niche, videosByNiche, videos, log)
+                    : videos;
+
+                var overlays = new List<string> { OverlayRenderer.MakeOverlay(script, 0, overlayFolder, stamp, fontChoice) };
                 for (var pointIndex = 0; pointIndex < script.Points.Count; pointIndex++)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    overlays.Add(OverlayRenderer.MakeOverlay(script, pointIndex + 1, options.OverlayFolder, stamp, fontChoice));
+                    overlays.Add(OverlayRenderer.MakeOverlay(script, pointIndex + 1, overlayFolder, stamp, fontChoice));
                 }
 
                 if (script.Cta.Length > 0)
                 {
-                    overlays.Add(OverlayRenderer.MakeOverlay(script, script.Points.Count + 1, options.OverlayFolder, stamp, fontChoice));
+                    overlays.Add(OverlayRenderer.MakeOverlay(script, script.Points.Count + 1, overlayFolder, stamp, fontChoice));
                 }
 
-                var output = FfmpegRenderer.RenderVideo(script, item.index, videos, music, options.OutputFolder, overlays, duration, ffmpegThreads, ffmpegPreset, options.Blur, options.BackgroundStyle, options.NoAudio, cancellationToken, log);
+                var output = FfmpegRenderer.RenderVideo(script, item.index, scriptVideos, music, outputFolder, overlays, duration, ffmpegThreads, ffmpegPreset, options.Blur, options.BackgroundStyle, options.NoAudio, cancellationToken, log);
                 Interlocked.Increment(ref success);
                 results.Add((item.index, output, null));
                 if (options.RemoveRenderedLines)
@@ -1732,6 +1752,67 @@ internal static class Renderer
         }
 
         return files;
+    }
+
+    private static Dictionary<string, List<string>> LoadVideosByNiche(string rootFolder, Action<string> log)
+    {
+        var routedVideos = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        if (!Directory.Exists(rootFolder))
+        {
+            return routedVideos;
+        }
+
+        foreach (var folder in Directory.EnumerateDirectories(rootFolder).OrderBy(path => path, new NaturalStringComparer()))
+        {
+            var files = ListFiles(folder, [".mp4", ".mov", ".mkv", ".webm", ".jpg", ".jpeg", ".png", ".webp", ".bmp"])
+                .OrderBy(_ => Random.Next())
+                .ToList();
+            if (files.Count == 0)
+            {
+                continue;
+            }
+
+            var key = NormalizeNicheKey(Path.GetFileName(folder));
+            if (key.Length == 0)
+            {
+                continue;
+            }
+
+            routedVideos[key] = files;
+            log($"[Niche Backgrounds] {Path.GetFileName(folder)}: {files.Count} file(s)");
+        }
+
+        return routedVideos;
+    }
+
+    private static IReadOnlyList<string> ResolveVideosForNiche(
+        string niche,
+        IReadOnlyDictionary<string, List<string>> videosByNiche,
+        IReadOnlyList<string> fallbackVideos,
+        Action<string> log)
+    {
+        var key = NormalizeNicheKey(niche);
+        if (videosByNiche.TryGetValue(key, out var videos))
+        {
+            return videos;
+        }
+
+        if (key == "selfimprovement" && videosByNiche.TryGetValue("self", out videos))
+        {
+            return videos;
+        }
+
+        log($"[Niche Backgrounds] No folder matched '{niche}'; using the full --videos folder.");
+        return fallbackVideos;
+    }
+
+    private static string NormalizeNicheKey(string value) =>
+        new(value.Where(char.IsLetterOrDigit).Select(char.ToLowerInvariant).ToArray());
+
+    private static string SafeNicheFolderName(string niche, string suffix)
+    {
+        var folder = new string(niche.Where(char.IsLetterOrDigit).ToArray());
+        return string.IsNullOrWhiteSpace(folder) ? "Other" : $"{folder}{suffix}";
     }
 
     public static List<string> ListFiles(string folder, string[] extensions)
@@ -2390,6 +2471,9 @@ internal static class Cli
             BackgroundPreviewFolder = map.GetValueOrDefault("background-preview"),
             NoAudio = map.ContainsKey("no-audio") || map.ContainsKey("silent"),
             RemoveRenderedLines = map.ContainsKey("remove-rendered-lines"),
+            VideosByNiche = map.ContainsKey("videos-by-niche"),
+            OutputByNiche = map.ContainsKey("output-by-niche"),
+            NicheOutputSuffix = map.GetValueOrDefault("niche-output-suffix", ""),
             ErrorLogPath = map.GetValueOrDefault("error-log"),
             TimingLogPath = map.GetValueOrDefault("timing-log")
         };
