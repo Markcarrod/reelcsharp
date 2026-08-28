@@ -997,6 +997,15 @@ internal static class OverlayRenderer
             var height = paragraphs.Sum(lines => ParagraphHeight(lines, fontSize, lineGap)) + paragraphGap * Math.Max(0, paragraphs.Count - 1);
             if (height <= maxHeight)
             {
+                var paragraphBreaks = Math.Max(0, paragraphs.Count - 1);
+                if (paragraphBreaks > 0)
+                {
+                    // Use spare space between sentences so separate thoughts never read as one block.
+                    var spareHeight = maxHeight - height;
+                    var extraGap = Math.Min(spareHeight * 0.72f / paragraphBreaks, fontSize * 0.9f);
+                    paragraphGap += Math.Max(0f, extraGap);
+                }
+
                 return new FittedBody(fontSize, lineGap, paragraphGap, paragraphs);
             }
         }
@@ -2051,13 +2060,17 @@ internal static class FfmpegRenderer
         {
             var inputIndex = i + 1;
             var start = Math.Round(revealStarts.ElementAtOrDefault(i) * 30d) / 30d;
-            var faded = $"ovr_faded_{i}";
+            var end = i + 1 < overlayPaths.Count
+                ? Math.Max(start, Math.Round(revealStarts[i + 1] * 30d) / 30d - 1d / 30d)
+                : effectiveDuration;
+            var frame = $"ovr_frame_{i}";
             var next = $"bg_next_{i}";
-            filters.Add(i == 0 || script.AllAtOnce
-                ? $"[{inputIndex}:v]null[{faded}]"
-                : $"[{inputIndex}:v]fade=t=in:st={start:0.000}:d=0.1:alpha=1[{faded}]");
-            var enable = i > 0 && !script.AllAtOnce ? $":enable='gte(t,{start:0.000})'" : "";
-            filters.Add($"{current}[{faded}]overlay=0:0{enable}[{next}]");
+            filters.Add($"[{inputIndex}:v]null[{frame}]");
+            // Each overlay is a complete text state. Limit it to its own interval so frames never stack.
+            var enable = script.AllAtOnce
+                ? ""
+                : $":enable='between(t,{start:0.000},{end:0.000})'";
+            filters.Add($"{current}[{frame}]overlay=0:0{enable}[{next}]");
             current = $"[{next}]";
         }
 
